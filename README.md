@@ -172,6 +172,29 @@ opción eficiente es entrenar un modelo propio de "Apolo" y pasar a
 Si el asistente ignora frases que sí eran para él, mira el log en modo `-v`:
 verás cómo transcribió tu palabra clave. Añade esa forma a `phrases`.
 
+### `'spotify' is not recognized as an internal or external command`
+
+La app no se encuentra. Casi ningún instalador de Windows mete su ejecutable en
+el `PATH`; lo que hacen es registrarse en **App Paths** del registro, que es por
+lo que `Win+R → spotify` sí funciona. El asistente consulta esa clave, pero si
+una app no está ahí hay que darle la ruta.
+
+Comprueba toda la allowlist de una vez:
+
+```powershell
+python scripts/diagnose_apps.py          # cuáles se localizan y cuáles no
+python scripts/diagnose_apps.py --fix    # además, intenta adivinar las rutas
+```
+
+Las que fallen, con ruta completa en **`config.local.yaml`**:
+
+```yaml
+apps:
+  spotify:
+    command: 'C:\Users\TU_USUARIO\AppData\Roaming\Spotify\Spotify.exe'
+    process: Spotify
+```
+
 ### El micrófono capta muy bajo
 
 ```powershell

@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from asistente.config import Config, Secrets
+from asistente.logsetup import configure as configure_logging
 from asistente.preflight import run_checks
 from asistente.router.catalog import load_catalog
 from asistente.router.embedder import OnnxEmbedder
@@ -43,36 +44,9 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _make_console_utf8() -> None:
-    """Evita los '--- Logging error ---' de la consola de Windows.
-
-    La consola usa cp1252/cp850, que no pueden codificar simbolos IPA. Piper
-    registra fonemas al sintetizar, y esos caracteres rompen el emisor de
-    logging: el mensaje se pierde y en su lugar sale un error que no dice nada.
-
-    `errors="replace"` en vez de dejarlo petar: perder un acento en un log es
-    aceptable, perder el log entero no.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            try:
-                stream.reconfigure(encoding="utf-8", errors="replace")
-            except (OSError, ValueError):
-                pass
-
-
 def main() -> int:
     args = _parse_args()
-    _make_console_utf8()
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    # httpx registra en INFO cada peticion que hacen huggingface_hub y ollama.
-    # En el arranque son decenas de lineas que tapan lo que si importa.
-    for noisy in ("httpx", "httpcore", "huggingface_hub", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    configure_logging(args.verbose)
 
     config = Config.load(args.config)
     secrets = Secrets()

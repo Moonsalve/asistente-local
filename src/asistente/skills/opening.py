@@ -19,8 +19,6 @@ El ultimo escalon garantiza que el comando nunca se queda sin efecto: si dices
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
 import webbrowser
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from asistente.config import Config
 from asistente.router.text import normalize
 from asistente.skills.base import Skill, SkillResult
+from asistente.skills.launcher import launch
 from asistente.skills.resolve import build_alias_index, resolve
 
 log = logging.getLogger(__name__)
@@ -70,20 +69,7 @@ class OpenTargetSkill(Skill):
 
     def _launch_app(self, app_name: str) -> SkillResult:
         spec = self._config.apps[app_name]
-        try:
-            # shell=True es necesario en Windows para resolver comandos del PATH
-            # y las App Execution Aliases (spotify, calc...). El riesgo habitual
-            # de inyeccion no aplica: `spec.command` viene de la allowlist de
-            # config.yaml, nunca del texto transcrito ni del LLM.
-            subprocess.Popen(  # noqa: S602
-                spec.command,
-                shell=sys.platform == "win32",
-                start_new_session=True,
-            )
-        except OSError as exc:
-            # Ejecutable ausente o ruta mal puesta en config.yaml: es una
-            # condicion ordinaria, no un fallo del programa. Sin traceback.
-            log.warning("no se pudo lanzar %r: %s", spec.command, exc)
+        if not launch(spec.command):
             return SkillResult.failed(f"No pude abrir {app_name}.")
         return SkillResult.silent()
 
