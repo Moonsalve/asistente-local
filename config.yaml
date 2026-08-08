@@ -1,0 +1,118 @@
+# Configuracion del asistente. Los secretos van en .env, no aqui.
+# Los campos marcados TUNING en src/asistente/config.py son los que hay que
+# barrer con scripts/benchmark.py en el PC Windows.
+
+audio:
+  input_device: null      # null = microfono por defecto. `python -m sounddevice` lista los indices.
+  sample_rate: 16000
+  block_size: 1280
+
+wake_word:
+  model: hey_jarvis
+  threshold: 0.5
+  refractory_s: 2.0
+
+vad:
+  # El parametro que mas afecta a la latencia percibida. Empieza en 0.35 y baja
+  # a 0.25 cuando confirmes que no te corta a media frase.
+  silence_s: 0.35
+  speech_threshold: 0.5
+  max_utterance_s: 15.0
+  preroll_s: 0.3
+
+stt:
+  model: large-v3-turbo
+  device: cuda
+  compute_type: int8_float16
+  language: es
+  beam_size: 1
+  condition_on_previous_text: false
+
+router:
+  embedding_model: intfloat/multilingual-e5-small
+  embedding_onnx_file: onnx/model.onnx
+  embedding_on_gpu: false   # en CPU cuesta ~2 ms; no merece ocupar VRAM
+  threshold: 0.25
+
+llm:
+  model: qwen2.5:3b-instruct-q4_K_M
+  host: http://127.0.0.1:11434
+  keep_alive: "-1"
+  temperature: 0.0
+  timeout_s: 10.0
+
+tts:
+  voice_model: models/es_MX-claude-high.onnx
+  speed: 1.0
+  stream_by_sentence: true
+
+spotify:
+  enabled: true
+  redirect_uri: http://127.0.0.1:8888/callback
+  fallback_to_media_keys: true
+
+# ---------------------------------------------------------------------------
+# ALLOWLIST DE APLICACIONES
+# Frontera de seguridad: lo que no aparezca aqui no se puede abrir ni cerrar,
+# venga el comando del catalogo o del LLM. Anade solo lo que uses.
+# Ajusta las rutas a tu instalacion en Windows.
+# ---------------------------------------------------------------------------
+apps:
+  spotify:
+    command: spotify
+    process: Spotify
+    aliases: [spoti, spotifai]
+  chrome:
+    command: chrome
+    process: chrome
+    aliases: [google chrome, navegador, el navegador]
+  discord:
+    command: discord
+    process: Discord
+    aliases: [discor]
+  explorador:
+    command: explorer
+    process: explorer
+    aliases: [explorador de archivos, archivos, carpetas]
+  calculadora:
+    command: calc
+    process: CalculatorApp
+    aliases: [calculator, la calculadora]
+  notas:
+    command: notepad
+    process: notepad
+    aliases: [bloc de notas, notepad, block de notas]
+  terminal:
+    command: wt
+    process: WindowsTerminal
+    aliases: [consola, cmd, powershell]
+  vscode:
+    command: code
+    process: Code
+    aliases: [visual studio code, vs code, el code, editor]
+  steam:
+    command: steam
+    process: steam
+    aliases: []
+
+# ---------------------------------------------------------------------------
+# SITIOS CONOCIDOS
+# Si `open.target` no encuentra la palabra en `apps`, la busca aqui. Si tampoco
+# esta, cae a una busqueda web: nunca se queda sin hacer nada.
+# ---------------------------------------------------------------------------
+sites:
+  youtube: https://www.youtube.com
+  gmail: https://mail.google.com
+  correo: https://mail.google.com
+  github: https://github.com
+  netflix: https://www.netflix.com
+  twitch: https://www.twitch.tv
+  reddit: https://www.reddit.com
+  wikipedia: https://es.wikipedia.org
+  whatsapp: https://web.whatsapp.com
+  chatgpt: https://chat.openai.com
+  drive: https://drive.google.com
+  maps: https://maps.google.com
+  traductor: https://translate.google.com
+
+search_url: https://duckduckgo.com/?q={query}

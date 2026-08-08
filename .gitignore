@@ -1,0 +1,22 @@
+# Secretos: NUNCA versionar. Contiene las credenciales de Spotify.
+.env
+
+# Entorno virtual y artefactos de Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Modelos descargados: pesan cientos de MB y se regeneran solos.
+models/
+*.onnx
+*.onnx.json
+
+# Cache del token de Spotify, por si alguien cambia la ruta por defecto.
+spotify-token.json
+.cache

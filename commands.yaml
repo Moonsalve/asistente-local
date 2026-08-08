@@ -1,0 +1,281 @@
+# Catalogo de intents.
+#
+# COMO FUNCIONA
+#   - `examples` son anclas semanticas, NO patrones. Al arrancar se codifican a
+#     vectores una sola vez; en runtime tu frase se compara por coseno contra
+#     todas. Por eso "esta no me gusta" acierta media.next aunque no comparta
+#     ninguna palabra con "siguiente cancion".
+#   - `literal` son frases exactas (tras normalizar acentos/mayusculas). Se
+#     comprueban antes que los embeddings y cuestan cero. Pon aqui solo las
+#     formas que repites a diario.
+#   - `slot_patterns` se aplican SOLO despues de que el intent ya esta decidido,
+#     asi que no tienen que desambiguar nada. Por eso "pon" puede aparecer en
+#     spotify.play y en app.open sin conflicto.
+#
+# COMO AMPLIARLO
+#   Anade una frase a `examples` y reinicia. Si un comando escala al LLM (lo
+#   veras en el log como stage=llm), esa frase es justo la que falta aqui.
+
+intents:
+  # ---------------------------------------------------------------- reproduccion
+  media.next:
+    tool: media.next
+    literal:
+      - siguiente cancion
+      - pasa la cancion
+      - siguiente
+    examples:
+      - siguiente cancion
+      - pasa la cancion
+      - cambia de cancion
+      - cambiala
+      - pon la siguiente
+      - saltate esta cancion
+      - esta cancion no me gusta
+      - quita esta cancion
+      - ponme otra cancion
+      - adelanta la cancion
+      - siguiente tema
+      - otra
+      # Sin este ejemplo, "no quiero escuchar esta" se iba a volume.up (0.932)
+      # arrastrada por "no te escucho bien".
+      - no quiero escuchar esta cancion
+      - no me gusta esta
+      # "pasala" y "regresala" son casi identicas lexicamente y opuestas en
+      # significado: si solo una de las dos esta anclada, el encoder se lleva la
+      # otra consigo. Hay que declarar ambos lados.
+      - pasala
+      - saltala
+    confirmation: null
+
+  media.previous:
+    tool: media.previous
+    literal:
+      - cancion anterior
+      - anterior
+    examples:
+      - cancion anterior
+      - pon la anterior
+      - vuelve a la cancion anterior
+      - regresa la cancion
+      - retrocede una cancion
+      - vuelve atras
+      - ponla otra vez desde el principio
+      - repite la cancion
+      # Formas encliticas de una sola palabra: el encoder no las relaciona con
+      # "regresa la cancion" por si solo.
+      - regresala
+      - devuelvela
+    confirmation: null
+
+  media.play_pause:
+    tool: media.play_pause
+    literal:
+      - pausa
+      - pausa la musica
+      - reanuda
+    examples:
+      - pausa la musica
+      - para la musica
+      - deten la reproduccion
+      - silencia la cancion un momento
+      - reanuda la musica
+      - sigue la musica
+      - dale play
+      - continua la cancion
+      - quita la pausa
+    confirmation: null
+
+  spotify.play:
+    tool: spotify.play
+    examples:
+      - pon la playlist de rock
+      - reproduce musica electronica
+      - pon algo de jazz
+      - quiero escuchar a los beatles
+      - ponme el album de daft punk
+      - reproduce la cancion bohemian rhapsody
+      - pon mis canciones favoritas
+      - pon la lista de reproduccion de entrenamiento
+      # "pon musica de los 80" empataba con media.play_pause (0.893 vs 0.892).
+      # Se ancla solo la forma en letra: la variante con digitos la cubre el
+      # encoder por generalizacion, y asi el test la sigue midiendo de verdad.
+      - pon musica de los ochenta
+      - ponme reggaeton
+    slot_patterns:
+      # "pon la playlist de rock" -> query="rock", tipo=playlist
+      - '^(?:pon|ponme|reproduce|pone)\s+(?:me\s+)?(?:la|el|las|los|un|una|mi|mis)?\s*(?:lista\s+de\s+reproduccion|playlist|album|disco|cancion|tema|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
+      # "quiero escuchar a los beatles" -> query="los beatles"
+      - '^(?:quiero\s+escuchar|escuchar|pon|ponme|reproduce)\s+(?:a\s+|algo\s+de\s+|musica\s+de\s+)?(?P<query>.+?)\s*$'
+    slots_required: true
+    confirmation: null
+
+  # -------------------------------------------------------------------- volumen
+  volume.up:
+    tool: system.volume_step
+    literal:
+      - sube el volumen
+      - mas volumen
+    examples:
+      - sube el volumen
+      - sube el sonido
+      - mas volumen
+      - ponlo mas alto
+      - no te escucho bien
+      - esta muy bajo
+      - aumenta el volumen
+    fixed_args:
+      delta: 10
+    confirmation: null
+
+  volume.down:
+    tool: system.volume_step
+    literal:
+      - baja el volumen
+      - menos volumen
+    examples:
+      - baja el volumen
+      - baja el sonido
+      - menos volumen
+      - ponlo mas bajo
+      - esta muy alto
+      - bajale
+      - reduce el volumen
+    fixed_args:
+      delta: -10
+    confirmation: null
+
+  volume.set:
+    tool: system.volume_set
+    examples:
+      - pon el volumen al cincuenta por ciento
+      - volumen al veinte
+      - deja el volumen en treinta
+      - ajusta el volumen a setenta
+    slot_patterns:
+      # Whisper a veces devuelve digitos ("volumen al 50") y a veces palabras
+      # ("volumen al cincuenta"). Se captura crudo y la skill lo convierte:
+      # el router extrae, la skill valida y coacciona.
+      - '(?P<level>\d{1,3})'
+      - '^(?:pon|ponme|deja|ajusta|sube|baja|cambia)?\s*(?:me\s+)?(?:el\s+)?volumen\s+(?:al?|en)\s+(?P<level>.+?)(?:\s+por\s+ciento)?\s*$'
+    slots_required: true
+    confirmation: null
+
+  volume.mute:
+    tool: system.mute
+    literal:
+      - silencio
+      - silencia
+    examples:
+      - silencia el sonido
+      - quita el sonido
+      - mutea
+      - callate
+      - silencio
+      # "sin sonido" se iba a volume.down (0.932 vs 0.921) sin este ejemplo.
+      - sin sonido
+      - quita el audio del todo
+    confirmation: null
+
+  # --------------------------------------------------- abrir (apps y webs juntas)
+  # NOTA DE DISENO: "abre spotify" (app) y "abre youtube" (web) son la MISMA
+  # intencion. Separarlas en dos intents fallaba: medido, "abreme el chrome"
+  # ganaba web.open con 0.942 frente a app.open con 0.922. La ambiguedad no es
+  # semantica sino de resolucion, asi que se decide donde toca: la skill
+  # `open.target` mira primero la allowlist de apps, luego el mapa de sitios, y
+  # si no reconoce nada cae a una busqueda web.
+  open.target:
+    tool: open.target
+    examples:
+      - abre spotify
+      - abreme el discord
+      - inicia el navegador
+      - ejecuta la calculadora
+      - lanza visual studio code
+      - arranca steam
+      - quiero abrir el explorador de archivos
+      - abre el bloc de notas
+      - abre youtube
+      - entra a github
+      - llevame a gmail
+      - abre la pagina de twitch
+      - ve a reddit
+      - abreme el correo
+    slot_patterns:
+      - '^(?:abre|abreme|abrime|abrir|inicia|iniciar|ejecuta|ejecutar|lanza|lanzar|arranca|arrancar|corre|entra\s+a|entra\s+en|ve\s+a|vete\s+a|llevame\s+a|navega\s+a|visita)\s+(?:me\s+)?(?:el|la|los|las|un|una)?\s*(?:aplicacion|app|programa|proceso|pagina|sitio|web)?\s*(?:de\s+)?(?P<target>.+?)\s*$'
+      - '^(?:quiero\s+)?(?:abrir|iniciar|ejecutar|entrar\s+a)\s+(?:el|la|los|las)?\s*(?P<target>.+?)\s*$'
+    slots_required: true
+    confirmation: null
+
+  app.close:
+    tool: app.close
+    examples:
+      - cierra spotify
+      - cierra el discord
+      - mata el proceso de chrome
+      - termina la calculadora
+      - quiero cerrar steam
+    slot_patterns:
+      - '^(?:cierra|cerrar|cierrame|mata|matar|termina|terminar|finaliza)\s+(?:me\s+)?(?:el|la|los|las)?\s*(?:proceso\s+de\s+|aplicacion\s+|app\s+|programa\s+)?(?P<app>.+?)\s*$'
+      - '^(?:quiero\s+)?cerrar\s+(?:el|la)?\s*(?P<app>.+?)\s*$'
+    slots_required: true
+    confirmation: null
+
+  # ------------------------------------------------------------------------ web
+  web.search:
+    tool: web.search
+    examples:
+      - busca en internet el clima de hoy
+      - googlea la receta de paella
+      - buscame informacion sobre python
+      - investiga cuanto mide la torre eiffel
+      - busca en google como hacer pan
+      - que dice internet sobre las elecciones
+    slot_patterns:
+      - '^(?:busca|buscar|buscame|googlea|investiga|investigar)\s+(?:me\s+)?(?:en\s+(?:internet|google|la\s+web|el\s+navegador)\s+)?(?:informacion\s+(?:sobre|de|acerca\s+de)\s+)?(?P<query>.+?)\s*$'
+      - '^(?:que\s+dice\s+internet\s+(?:sobre|de)|que\s+se\s+sabe\s+de)\s+(?P<query>.+?)\s*$'
+    slots_required: true
+    confirmation: null
+
+  # --------------------------------------------------------------------- sistema
+  system.time:
+    tool: system.time
+    literal:
+      - que hora es
+    examples:
+      - que hora es
+      - dime la hora
+      - me dices la hora
+      - que hora tenemos
+    confirmation: null
+
+  # ------------------------------------------------------- clase negativa (LLM)
+  # Este intent no ejecuta nada: si gana el coseno, la frase escala al LLM.
+  #
+  # POR QUE EXISTE: medido sobre este catalogo, un umbral absoluto no separa
+  # comandos de charla (positivos hasta 0.856, negativos hasta 0.903: solapan).
+  # Con una clase negativa la pregunta deja de ser "supera el umbral?" y pasa a
+  # ser "se parece mas a un comando o a una conversacion?", que es una decision
+  # relativa y mucho mas estable.
+  #
+  # COMO MANTENERLO: si una pregunta abierta se ejecuta como comando por error,
+  # anadela aqui. Es el mismo gesto que anadir una parafrasis a un intent real.
+  _fallback:
+    fallback: true
+    examples:
+      - explicame la teoria de la relatividad
+      - cuentame un chiste
+      - que opinas de la inteligencia artificial
+      - como se dice buenos dias en japones
+      - escribe un correo para mi jefe
+      - recuerdame comprar leche manana
+      - cuanto es doscientos por trescientos
+      - resumeme la noticia
+      - por que el cielo es azul
+      - dame ideas para la cena
+      - traduce esta frase al ingles
+      - ayudame a redactar un mensaje
+      - que me recomiendas ver esta noche
+      - hazme un resumen de lo que hice hoy
+      - quien invento el telefono
+      - cual es la capital de australia
