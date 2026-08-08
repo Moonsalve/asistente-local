@@ -32,8 +32,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# En Windows con CUDA: onnxruntime-gpu reemplaza a onnxruntime.
-gpu = ["onnxruntime-gpu>=1.19"]
+# CUDA en Windows. CTranslate2 (el motor de faster-whisper) enlaza contra
+# cuBLAS y cuDNN de CUDA 12, que NO vienen con el driver de NVIDIA. Sin estos
+# paquetes el STT falla con "Library cublas64_12.dll is not found".
+# Ver src/asistente/cuda_setup.py para por que ademas hay que registrar los
+# directorios de DLL a mano en Windows.
+gpu = [
+    "onnxruntime-gpu>=1.19",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12>=9",
+]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
 
 [project.scripts]

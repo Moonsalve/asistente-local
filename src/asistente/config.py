@@ -93,7 +93,12 @@ class LlmConfig(BaseModel):
     host: str = "http://127.0.0.1:11434"
     #: -1 mantiene el modelo en VRAM indefinidamente. Sin esto, el primer
     #: comando tras un rato de inactividad tarda 5-10 s en volver a cargar.
-    keep_alive: str = "-1"
+    #:
+    #: TIENE QUE SER NUMERO, NO CADENA. Ollama interpreta las cadenas como
+    #: duraciones con unidad ("10m", "1h"); "-1" sin unidad da HTTP 400
+    #: `missing unit in duration`. Como numero se lee en segundos, y -1 es el
+    #: valor especial "no lo descargues nunca".
+    keep_alive: int | str = -1
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     timeout_s: float = Field(default=10.0, gt=0.0)
 

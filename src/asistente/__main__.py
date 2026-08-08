@@ -49,6 +49,10 @@ def main() -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # httpx registra en INFO cada peticion que hacen huggingface_hub y ollama.
+    # En el arranque son decenas de lineas que tapan lo que si importa.
+    for noisy in ("httpx", "httpcore", "huggingface_hub", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     config = Config.load(args.config)
     secrets = Secrets()

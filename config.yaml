@@ -37,7 +37,7 @@ router:
 llm:
   model: qwen2.5:3b-instruct-q4_K_M
   host: http://127.0.0.1:11434
-  keep_alive: "-1"
+  keep_alive: -1          # numero, no cadena: "-1" da HTTP 400 en Ollama
   temperature: 0.0
   timeout_s: 10.0
 

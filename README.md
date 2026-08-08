@@ -33,7 +33,7 @@ Windows y está sin ejecutar.
 py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
-pip install onnxruntime-gpu        # sustituye a onnxruntime si tienes CUDA
+pip install -e ".[gpu]"            # CUDA: onnxruntime-gpu + cuBLAS + cuDNN
 
 # 2. Modelo del LLM
 ollama pull qwen2.5:3b-instruct-q4_K_M
@@ -94,6 +94,44 @@ PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a f
 
 `tests/test_router.py` mide el router contra frases que **no** están en
 `commands.yaml`: probar con las del propio catálogo no demostraría nada.
+
+---
+
+## Problemas conocidos
+
+### `RuntimeError: Library cublas64_12.dll is not found or cannot be loaded`
+
+CTranslate2 (el motor de faster-whisper) necesita cuBLAS y cuDNN de CUDA 12, y
+**no vienen con el driver de NVIDIA**:
+
+```powershell
+pip install -e ".[gpu]"
+```
+
+Además, desde Python 3.8 Windows ya no busca DLL en el `PATH`: hay que declarar
+los directorios explícitamente. De eso se encarga `src/asistente/cuda_setup.py`,
+que corre antes de cargar CTranslate2.
+
+Si aun así falla, el asistente **degrada el STT a CPU automáticamente** y avisa
+en el log. Funciona, pero más lento: sirve para probar el resto del pipeline
+mientras arreglas CUDA.
+
+### `ollama ResponseError: time: missing unit in duration "-1"`
+
+`keep_alive` en `config.yaml` tiene que ser número, no cadena. Ollama interpreta
+las cadenas como duraciones con unidad (`10m`, `1h`); un `"-1"` entrecomillado
+da HTTP 400. Correcto:
+
+```yaml
+llm:
+  keep_alive: -1     # sin comillas
+```
+
+### `UserWarning: cache-system uses symlinks... your machine does not support them`
+
+Inofensivo. Hugging Face cachea sin symlinks y ocupa algo más de disco. Para
+silenciarlo, `setx HF_HUB_DISABLE_SYMLINKS_WARNING 1`. Si prefieres los
+symlinks, activa el Modo Desarrollador de Windows.
 
 ---
 
