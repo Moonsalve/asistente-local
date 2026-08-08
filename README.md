@@ -107,6 +107,49 @@ PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a f
 
 ---
 
+## Palabra clave
+
+Por defecto: **"Apolo"**. Dile la clave y la orden del tirón:
+
+> *"Apolo, pon música"* · *"Apolo, pásala"* · *"Apolo, qué hora es"*
+
+Si dices solo *"Apolo"*, se queda escuchando la orden que venga después.
+
+### Dos modos de activación
+
+| | `transcript` (por defecto) | `openwakeword` |
+|---|---|---|
+| Palabras admitidas | **cualquiera, en español** | solo las que tengan modelo entrenado |
+| Entrenamiento | ninguno | ~1 h en Colab para una propia |
+| CPU en reposo | Whisper por cada frase cercana | 1–2% de un núcleo |
+| "Apolo" | sí | requiere entrenarlo |
+
+Se elige en `config.yaml`. `transcript` es lo que permite usar "Apolo" hoy: no
+existe modelo preentrenado para esa palabra, y los que vienen con openWakeWord
+(`hey_jarvis`, `alexa`, `hey_mycroft`, `hey_rhasspy`) están entrenados con voces
+inglesas, así que hay que pronunciarlos a la inglesa.
+
+**El coste de `transcript` es real**: Whisper se ejecuta cada vez que alguien
+habla cerca del micrófono, no solo cuando le hablas al asistente. Con la GPU son
+~150 ms por frase y no se nota; en CPU sí. Cuando el sistema esté rodado, la
+opción eficiente es entrenar un modelo propio de "Apolo" y pasar a
+`openwakeword`.
+
+Si el asistente ignora frases que sí eran para él, mira el log en modo `-v`:
+verás cómo transcribió tu palabra clave. Añade esa forma a `phrases`.
+
+### El micrófono no detecta nada
+
+```powershell
+python scripts/diagnose_audio.py --list    # ver los micrófonos disponibles
+python scripts/diagnose_audio.py           # grabar 5 s y diagnosticar
+```
+
+Distingue las cuatro causas posibles —micrófono mudo, ganancia baja, VAD que no
+oye voz, o umbral demasiado alto— y dice cuál es la tuya.
+
+---
+
 ## Problemas conocidos
 
 ### `RuntimeError: Library cublas64_12.dll is not found or cannot be loaded`

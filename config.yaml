@@ -8,6 +8,23 @@ audio:
   block_size: 1280
 
 wake_word:
+  # "transcript": transcribe lo que oye y busca la clave en el TEXTO. Acepta
+  #   cualquier palabra en espanol sin entrenar nada. Es lo que permite usar
+  #   "Apolo", para el que no existe modelo preentrenado.
+  #   Coste: Whisper corre cada vez que alguien habla cerca del microfono.
+  # "openwakeword": modelo dedicado siempre escuchando (1-2% de CPU), pero solo
+  #   con palabras entrenadas, y las preentrenadas son inglesas.
+  mode: transcript
+
+  # Varias formas porque Whisper no transcribe igual un nombre propio cada vez.
+  # Si ves en el log que ignora frases que si eran para el, anade la forma que
+  # aparezca ahi.
+  phrases: [apolo, apollo, a polo]
+  phrase_threshold: 82.0
+
+  # Solo en modo openwakeword. Preentrenados: hey_jarvis, alexa, hey_mycroft,
+  # hey_rhasspy. "alexa" es el mas fiable para un hispanohablante porque suena
+  # igual en ambos idiomas.
   model: hey_jarvis
   threshold: 0.5
   refractory_s: 2.0

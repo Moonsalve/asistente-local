@@ -10,7 +10,7 @@ Los valores por defecto de aqui son los del plan. Los umbrales marcados como
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -33,8 +33,22 @@ class AudioConfig(BaseModel):
 class WakeWordConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    #: Modelo preentrenado de openWakeWord. Para un wake word propio, apunta
-    #: aqui al .onnx entrenado con el pipeline sintetico de openWakeWord.
+    #: "openwakeword": modelo dedicado siempre escuchando (1-2% de CPU), pero
+    #:   solo funciona con palabras para las que exista modelo entrenado, y los
+    #:   preentrenados son todos ingleses.
+    #: "transcript": transcribe lo que oye y busca la clave en el texto. Acepta
+    #:   CUALQUIER frase en espanol sin entrenar nada, a cambio de ejecutar
+    #:   Whisper cada vez que alguien habla cerca del microfono.
+    mode: Literal["openwakeword", "transcript"] = "transcript"
+
+    #: Solo en modo "transcript". Varias formas porque Whisper no siempre
+    #: transcribe igual un nombre propio.
+    phrases: tuple[str, ...] = ("apolo", "apollo", "a polo")
+    #: Similitud minima (0-100) para dar por dicha la clave.
+    phrase_threshold: float = Field(default=82.0, ge=0.0, le=100.0)
+
+    #: Solo en modo "openwakeword". Preentrenados: hey_jarvis, alexa,
+    #: hey_mycroft, hey_rhasspy. Para uno propio, ruta a tu .onnx.
     model: str = "hey_jarvis"
     #: TUNING. Subir reduce falsos positivos y aumenta los fallos de activacion.
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)

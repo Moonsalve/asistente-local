@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 
 from asistente.audio.capture import MicrophoneStream
+from asistente.audio.keyphrase import KeyphraseGate
 from asistente.audio.recorder import UtteranceRecorder
 from asistente.audio.wakeword import WakeWordDetector
 from asistente.router.engine import Router
@@ -61,15 +62,19 @@ class Assistant:
     def __init__(
         self,
         mic: MicrophoneStream,
-        wake_word: WakeWordDetector,
         recorder: UtteranceRecorder,
         transcriber: Transcriber,
         router: Router,
         registry: SkillRegistry,
         speaker: Speaker,
+        wake_word: WakeWordDetector | None = None,
+        keyphrase: KeyphraseGate | None = None,
     ) -> None:
+        if (wake_word is None) == (keyphrase is None):
+            raise ValueError("hay que dar exactamente uno: wake_word o keyphrase")
         self._mic = mic
         self._wake_word = wake_word
+        self._keyphrase = keyphrase
         self._recorder = recorder
         self._transcriber = transcriber
         self._router = router
@@ -78,6 +83,14 @@ class Assistant:
         self.metrics: list[TurnMetrics] = []
 
     def run_forever(self) -> None:
+        if self._keyphrase is not None:
+            self._run_transcript_mode()
+        else:
+            self._run_wakeword_mode()
+
+    def _run_wakeword_mode(self) -> None:
+        """Modelo dedicado siempre escuchando; solo transcribe tras activarse."""
+        assert self._wake_word is not None
         blocks = self._mic.blocks()
         log.info("escuchando. Di la palabra clave para empezar.")
         for block in blocks:  # type: ignore[attr-defined]
@@ -92,20 +105,63 @@ class Assistant:
             finally:
                 self._wake_word.reset()
 
+    def _run_transcript_mode(self) -> None:
+        """Transcribe cada frase y actua solo si empieza por la palabra clave.
+
+        Cuando dices la clave y la orden del tiron ("Apolo, pon musica") basta
+        UNA transcripcion: la orden ya viene en el mismo texto. Solo si dices la
+        clave a secas se graba una segunda vez para escuchar la orden.
+        """
+        assert self._keyphrase is not None
+        blocks = self._mic.blocks()
+        log.info("escuchando. Di la palabra clave para empezar.")
+
+        while True:
+            try:
+                audio = self._recorder.record(blocks, self._mic.preroll_audio())
+                if audio.size == 0:
+                    continue
+
+                started = perf_counter()
+                text = self._transcriber.transcribe(audio, self._mic.sample_rate)
+                stt_s = perf_counter() - started
+                if not text:
+                    continue
+
+                command = self._keyphrase.match(text)
+                if command is None:
+                    # No iba dirigido al asistente. A DEBUG y no a INFO: en modo
+                    # transcripcion esto pasa con cualquier conversacion ajena.
+                    log.debug("ignorado (sin palabra clave): %r", text)
+                    continue
+
+                if not command:
+                    # Dijo solo la clave: escuchar ahora la orden.
+                    log.info("palabra clave detectada; te escucho")
+                    self._handle_turn(blocks)
+                    continue
+
+                log.info("palabra clave + orden en una frase: %r", command)
+                self._complete_turn(command, stt_s)
+            except Exception:
+                log.exception("el turno fallo")
+
     def _handle_turn(self, blocks: object) -> None:
         audio = self._recorder.record(blocks, self._mic.preroll_audio())
         if audio.size == 0:
             return
 
-        metrics = TurnMetrics()
-
         started = perf_counter()
         text = self._transcriber.transcribe(audio, self._mic.sample_rate)
-        metrics.stt_s = perf_counter() - started
-        metrics.text = text
+        stt_s = perf_counter() - started
         if not text:
-            metrics.log()
             return
+
+        self._complete_turn(text, stt_s)
+
+    def _complete_turn(self, text: str, stt_s: float) -> None:
+        """Enruta y ejecuta un texto ya transcrito, midiendo cada etapa."""
+        metrics = TurnMetrics(stt_s=stt_s, text=text)
 
         started = perf_counter()
         result = self._router.route(text)

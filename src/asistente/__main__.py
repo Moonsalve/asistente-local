@@ -135,6 +135,7 @@ def _run_text_mode(router: object, registry: object) -> int:
 
 def _run_voice_mode(config: Config, router: object, registry: object) -> int:
     from asistente.audio.capture import MicrophoneStream
+    from asistente.audio.keyphrase import KeyphraseGate
     from asistente.audio.recorder import UtteranceRecorder
     from asistente.audio.vad import SileroVad
     from asistente.audio.wakeword import WakeWordDetector
@@ -152,11 +153,19 @@ def _run_voice_mode(config: Config, router: object, registry: object) -> int:
 
     speaker = Speaker(config.tts.voice_model, config.tts.speed)
     speaker.warmup()
-    wake_word = WakeWordDetector(
-        config.wake_word.model,
-        config.wake_word.threshold,
-        config.wake_word.refractory_s,
-    )
+
+    wake_word = keyphrase = None
+    if config.wake_word.mode == "openwakeword":
+        wake_word = WakeWordDetector(
+            config.wake_word.model,
+            config.wake_word.threshold,
+            config.wake_word.refractory_s,
+        )
+        log.info("activacion por wake word: '%s'", config.wake_word.model)
+    else:
+        keyphrase = KeyphraseGate(config.wake_word.phrases, config.wake_word.phrase_threshold)
+        log.info("activacion por transcripcion: %s", " / ".join(config.wake_word.phrases))
+
     recorder = UtteranceRecorder(SileroVad(config.audio.sample_rate), config.vad, config.audio.sample_rate)
 
     with MicrophoneStream(
@@ -165,7 +174,16 @@ def _run_voice_mode(config: Config, router: object, registry: object) -> int:
         device=config.audio.input_device,
         preroll_s=config.vad.preroll_s,
     ) as mic:
-        assistant = Assistant(mic, wake_word, recorder, transcriber, router, registry, speaker)
+        assistant = Assistant(
+            mic,
+            recorder,
+            transcriber,
+            router,
+            registry,
+            speaker,
+            wake_word=wake_word,
+            keyphrase=keyphrase,
+        )
         try:
             assistant.run_forever()
         except KeyboardInterrupt:

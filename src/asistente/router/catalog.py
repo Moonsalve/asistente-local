@@ -58,13 +58,14 @@ class Catalog:
         return self.intents[intent].fallback
 
 
-def load_catalog(path: Path, embedder: Embedder) -> Catalog:
+def load_catalog(path: Path | str, embedder: Embedder) -> Catalog:
     """Lee el YAML, valida y precomputa los indices.
 
     Falla ruidosamente ante cualquier inconsistencia: un catalogo roto detectado
     al arrancar es un error de 2 minutos, uno detectado en runtime es un comando
     que se traga el usuario a mitad de una frase.
     """
+    path = Path(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or "intents" not in raw:
         raise CatalogError(f"{path}: se esperaba una clave raiz 'intents'")
