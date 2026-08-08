@@ -10,11 +10,23 @@ aparte. La via comoda son los paquetes pip `nvidia-cublas-cu12` y
     <venv>/Lib/site-packages/nvidia/cublas/bin/
     <venv>/Lib/site-packages/nvidia/cudnn/bin/
 
-y desde Python 3.8 Windows YA NO busca DLL en el PATH del proceso: hay que
-declarar los directorios explicitamente con `os.add_dll_directory`. Sin esto el
-sintoma es exactamente:
+y Windows no las busca ahi por su cuenta. El sintoma es exactamente:
 
     RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+
+HAY QUE HACER DOS COSAS, NO UNA
+-------------------------------
+Windows tiene dos mecanismos de busqueda de DLL y cada uno mira sitios
+distintos:
+
+  1. `os.add_dll_directory()` -> lo usan las extensiones de Python (.pyd) al
+     resolver su tabla de importacion.
+  2. `PATH` -> lo usa `LoadLibrary` cuando lo llama codigo nativo por su cuenta.
+
+CTranslate2 carga cuBLAS desde su propio codigo C++, o sea por la via 2. Por eso
+registrar solo los directorios con `add_dll_directory` NO basta: los directorios
+aparecen como registrados en el log y la carga sigue fallando, que es
+exactamente lo que se observo. Aqui se hacen las dos.
 
 Este modulo tiene que ejecutarse ANTES del primer `import faster_whisper`, y por
 eso `transcriber.py` lo llama en su propio import.
@@ -66,9 +78,12 @@ def ensure_cuda_dlls() -> list[Path]:
                 continue
             seen.add(dll_dir)
             os.add_dll_directory(str(dll_dir))
-            # A INFO y no a DEBUG: cuando el STT falla, lo primero que se
-            # quiere saber es si estos directorios se registraron o no.
-            log.info("CUDA: registrado %s (%d dll)", dll_dir, len(list(dll_dir.glob("*.dll"))))
+            log.debug("CUDA: registrado %s", dll_dir)
+
+    if seen:
+        # La mitad que faltaba. CTranslate2 llama a LoadLibrary desde su codigo
+        # C++, y esa via ignora add_dll_directory pero SI mira el PATH.
+        _prepend_to_path(seen)
 
     _already_configured = True
     if not seen:
@@ -77,11 +92,50 @@ def ensure_cuda_dlls() -> list[Path]:
             'Si el STT falla con "cublas64_12.dll is not found": '
             'pip install -e ".[gpu]"'
         )
-    elif not any((d / "cublas64_12.dll").is_file() for d in seen):
-        # Los directorios existen pero no contienen la DLL concreta que
-        # CTranslate2 busca: instalacion incompleta o version de CUDA distinta.
-        log.warning(
-            "CUDA: los directorios de NVIDIA estan pero falta cublas64_12.dll. "
-            "Diagnostico completo: python scripts/diagnose_cuda.py"
-        )
+    else:
+        _verify_loadable(seen)
     return sorted(seen)
+
+
+def _prepend_to_path(directories: set[Path]) -> None:
+    """Antepone los directorios al PATH del proceso.
+
+    Antepone y no anade: si hay otra version de CUDA instalada en el sistema,
+    queremos que gane la de los paquetes pip, que es la que corresponde a la
+    version de CTranslate2 instalada.
+    """
+    current = os.environ.get("PATH", "")
+    existing = set(current.split(os.pathsep))
+    missing = [str(d) for d in sorted(directories) if str(d) not in existing]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join([*missing, current])
+        log.info("CUDA: %d directorio(s) anadidos al PATH del proceso", len(missing))
+
+
+def _verify_loadable(directories: set[Path]) -> None:
+    """Comprueba de verdad que Windows puede cargar la DLL clave.
+
+    Registrar los directorios no garantiza nada: hasta ahora el log decia
+    "registrado" y la carga fallaba igual. Intentarlo aqui convierte el
+    diagnostico en una respuesta en vez de una suposicion, y ademas deja la
+    DLL ya cargada en el proceso, con lo que CTranslate2 la encuentra sin
+    volver a buscarla.
+    """
+    import ctypes
+
+    key_dll = "cublas64_12.dll"
+    if not any((d / key_dll).is_file() for d in directories):
+        log.warning(
+            "CUDA: los directorios estan pero falta %s. "
+            "Diagnostico: python scripts/diagnose_cuda.py",
+            key_dll,
+        )
+        return
+
+    try:
+        ctypes.WinDLL(key_dll)
+    except OSError as exc:
+        log.warning("CUDA: %s existe pero Windows no puede cargarla: %s", key_dll, exc)
+        log.warning("CUDA: diagnostico completo con  python scripts/diagnose_cuda.py")
+        return
+    log.info("CUDA: %s cargada correctamente", key_dll)

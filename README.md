@@ -161,9 +161,12 @@ CTranslate2 (el motor de faster-whisper) necesita cuBLAS y cuDNN de CUDA 12, y
 pip install -e ".[gpu]"
 ```
 
-Además, desde Python 3.8 Windows ya no busca DLL en el `PATH`: hay que declarar
-los directorios explícitamente. De eso se encarga `src/asistente/cuda_setup.py`,
-que corre antes de cargar CTranslate2.
+Además hay que decirle a Windows dónde están, y **por dos vías distintas**:
+`os.add_dll_directory()` (que usan las extensiones de Python) y el `PATH` (que
+usa `LoadLibrary` cuando lo llama código nativo). CTranslate2 carga cuBLAS desde
+su propio C++, o sea por la segunda: registrar solo los directorios no basta —
+el log dice "registrado" y la carga falla igual. `src/asistente/cuda_setup.py`
+hace las dos y comprueba con `ctypes` que la DLL carga de verdad.
 
 Si aun así falla, el asistente **degrada el STT a CPU automáticamente** y avisa
 en el log. Funciona, pero más lento: sirve para probar el resto del pipeline

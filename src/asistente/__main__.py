@@ -43,8 +43,27 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _make_console_utf8() -> None:
+    """Evita los '--- Logging error ---' de la consola de Windows.
+
+    La consola usa cp1252/cp850, que no pueden codificar simbolos IPA. Piper
+    registra fonemas al sintetizar, y esos caracteres rompen el emisor de
+    logging: el mensaje se pierde y en su lugar sale un error que no dice nada.
+
+    `errors="replace"` en vez de dejarlo petar: perder un acento en un log es
+    aceptable, perder el log entero no.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main() -> int:
     args = _parse_args()
+    _make_console_utf8()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
