@@ -19,13 +19,13 @@ El ultimo escalon garantiza que el comando nunca se queda sin efecto: si dices
 from __future__ import annotations
 
 import logging
-import webbrowser
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from asistente.config import Config
 from asistente.router.text import normalize
 from asistente.skills.base import Skill, SkillResult
+from asistente.skills.browser import Browser
 from asistente.skills.launcher import launch
 from asistente.skills.resolve import build_alias_index, resolve
 
@@ -46,8 +46,9 @@ class OpenTargetSkill(Skill):
         "'entra a X', 'llevame a X'."
     )
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, browser: Browser) -> None:
         self._config = config
+        self._browser = browser
         self._app_index = build_alias_index(config.apps)
         self._site_index = {normalize(alias): url for alias, url in config.sites.items()}
 
@@ -59,12 +60,12 @@ class OpenTargetSkill(Skill):
             return self._launch_app(app_name)
 
         if (url := self._site_index.get(normalize(target))) is not None:
-            webbrowser.open(url)
+            self._browser.open(url)
             return SkillResult.silent()
 
         # Ni app conocida ni sitio conocido: buscarlo es mas util que no hacer nada.
         query = self._config.search_url.format(query=_url_quote(target))
-        webbrowser.open(query)
+        self._browser.open(query)
         return SkillResult.says(f"No conozco {target}, te lo busco.")
 
     def _launch_app(self, app_name: str) -> SkillResult:

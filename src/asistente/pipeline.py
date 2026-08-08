@@ -132,6 +132,9 @@ class Assistant:
                 if command is None:
                     # No iba dirigido al asistente. A DEBUG y no a INFO: en modo
                     # transcripcion esto pasa con cualquier conversacion ajena.
+                    # Si SI le hablabas y salio por aqui, arranca con -v: veras
+                    # como transcribio tu palabra clave y podras anadir esa
+                    # forma a `wake_word.phrases`.
                     log.debug("ignorado (sin palabra clave): %r", text)
                     continue
 
@@ -174,6 +177,16 @@ class Assistant:
 
         metrics.log()
         self.metrics.append(metrics)
+
+        if result.stage is Stage.LLM:
+            # A INFO y bien visible: cada frase que llega aqui es una parafrasis
+            # que le falta al catalogo. Es la unica forma practica de saber que
+            # anadir, porque nadie recuerda despues como lo dijo exactamente.
+            log.info(
+                "AL CATALOGO LE FALTA ESTA FRASE: %r  "
+                "-> anadela a `examples` del intent correspondiente en commands.yaml",
+                text,
+            )
 
     def _act(self, result: object) -> None:
         from asistente.router.schema import RouteResult

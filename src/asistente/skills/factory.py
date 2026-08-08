@@ -10,6 +10,7 @@ from __future__ import annotations
 from asistente.config import Config, Secrets
 from asistente.skills.apps import CloseAppSkill
 from asistente.skills.base import Skill
+from asistente.skills.browser import Browser
 from asistente.skills.media import NextTrackSkill, PlayPauseSkill, PreviousTrackSkill
 from asistente.skills.opening import OpenTargetSkill
 from asistente.skills.registry import SkillRegistry
@@ -20,7 +21,13 @@ from asistente.skills.spotify import (
     SpotifyPlaySkill,
     WhatSongSkill,
 )
-from asistente.skills.system import MuteSkill, TimeSkill, VolumeSetSkill, VolumeStepSkill
+from asistente.skills.system import (
+    DateSkill,
+    MuteSkill,
+    TimeSkill,
+    VolumeSetSkill,
+    VolumeStepSkill,
+)
 from asistente.skills.web import WebSearchSkill
 
 
@@ -28,6 +35,7 @@ def build_registry(config: Config, secrets: Secrets) -> tuple[SkillRegistry, Spo
     """Instancia todas las skills. Devuelve tambien el cliente de Spotify para
     que el arranque pueda conectarlo y calentarlo antes del primer comando."""
     spotify = SpotifyClient(config, secrets)
+    browser = Browser.from_path(config.web.browser, config.web.browser_path)
     use_keys = config.spotify.fallback_to_media_keys
 
     skills: list[Skill] = [
@@ -42,8 +50,9 @@ def build_registry(config: Config, secrets: Secrets) -> tuple[SkillRegistry, Spo
         VolumeSetSkill(),
         MuteSkill(),
         TimeSkill(),
-        OpenTargetSkill(config),
+        DateSkill(),
+        OpenTargetSkill(config, browser),
         CloseAppSkill(config),
-        WebSearchSkill(config),
+        WebSearchSkill(config, browser),
     ]
     return SkillRegistry(skills), spotify

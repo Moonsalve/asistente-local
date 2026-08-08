@@ -153,6 +153,41 @@ class TtsConfig(BaseModel):
     stream_by_sentence: bool = True
 
 
+class WebConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Navegador en el que se abre todo: busquedas y paginas. Conocidos:
+    #: brave, chrome, firefox, edge, opera, vivaldi. Cadena vacia = el del
+    #: sistema.
+    browser: str = "brave"
+    #: Ruta explicita, por si la deteccion automatica no lo encuentra.
+    browser_path: Path | None = None
+    #: Buscador. {query} se sustituye por lo que pidas, ya escapado.
+    #:   Google       https://www.google.com/search?q={query}
+    #:   Brave Search https://search.brave.com/search?q={query}
+    #:   DuckDuckGo   https://duckduckgo.com/?q={query}
+    search_url: str = "https://www.google.com/search?q={query}"
+
+
+class DiscoveryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Enumera al arrancar las aplicaciones instaladas y las anade a la
+    #: allowlist. Lo declarado a mano en `apps:` SIEMPRE tiene prioridad.
+    #:
+    #: NOTA DE SEGURIDAD: con esto la allowlist deja de ser una lista curada y
+    #: pasa a ser "todo lo que hay instalado". El limite sigue existiendo -solo
+    #: se abre software ya presente en el equipo, y el LLM sigue sin poder
+    #: ejecutar comandos arbitrarios- pero es una frontera mas ancha. Ponlo a
+    #: false si prefieres controlar exactamente que se puede abrir.
+    enabled: bool = True
+    #: Incluir juegos de Steam.
+    steam: bool = True
+    #: Horas que vale el cache antes de volver a enumerar. Enumerar tarda unos
+    #: segundos (lanza PowerShell), y las apps instaladas no cambian a menudo.
+    cache_hours: float = Field(default=24.0, ge=0.0)
+
+
 class AppSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -188,6 +223,8 @@ class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     audio: AudioConfig = AudioConfig()
+    web: WebConfig = WebConfig()
+    discovery: DiscoveryConfig = DiscoveryConfig()
     wake_word: WakeWordConfig = WakeWordConfig()
     vad: VadConfig = VadConfig()
     stt: SttConfig = SttConfig()
@@ -200,7 +237,10 @@ class Config(BaseModel):
     apps: dict[str, AppSpec] = Field(default_factory=dict)
     #: Sitios conocidos: alias -> URL. Lo que no este aqui cae a busqueda web.
     sites: dict[str, str] = Field(default_factory=dict)
-    search_url: str = "https://duckduckgo.com/?q={query}"
+
+    @property
+    def search_url(self) -> str:
+        return self.web.search_url
 
     @model_validator(mode="after")
     def _check_site_urls(self) -> Self:

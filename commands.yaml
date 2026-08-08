@@ -254,6 +254,8 @@ intents:
       - dime la hora
       - me dices la hora
       - que hora tenemos
+      - que hora tienes
+      - a que hora estamos
     confirmation: null
 
   # ------------------------------------------------------- clase negativa (LLM)
@@ -338,4 +340,23 @@ intents:
       - pon las canciones en orden
     fixed_args:
       enabled: false
+    confirmation: null
+
+  system.date:
+    tool: system.date
+    literal:
+      - que dia es hoy
+      - que fecha es hoy
+    examples:
+      # OJO: sin este intent, "que dia es hoy" caia en system.time y el
+      # asistente respondia con la hora. Son preguntas parecidas en forma y
+      # distintas en intencion; ambas necesitan anclas propias.
+      - que dia es hoy
+      - que fecha es hoy
+      - en que fecha estamos
+      - a que dia estamos
+      - dime la fecha
+      - que dia de la semana es
+      - cual es la fecha de hoy
+      - que dia es
     confirmation: null

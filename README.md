@@ -109,25 +109,35 @@ PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a f
 
 ## Aplicaciones: autodescubrimiento
 
-No hace falta escribir la lista a mano. Enumera lo instalado —apps de la
-Microsoft Store, de escritorio y juegos de Steam— y genera el bloque `apps:`:
+**Es automático.** Al arrancar, el asistente enumera lo instalado —apps de la
+Microsoft Store, de escritorio y juegos de Steam— y lo añade a la allowlist. No
+hay que ejecutar nada ni mantener listas.
 
-```powershell
-python scripts/discover_apps.py            # ver qué encuentra
-python scripts/discover_apps.py --write    # escribirlo en config.local.yaml
-python scripts/diagnose_apps.py            # comprobar que todo se localiza
+El resultado se cachea 24 h, así que solo la primera ejecución del día paga el
+coste de enumerar (unos segundos: lanza PowerShell y recorre el menú Inicio).
+
+```yaml
+# config.local.yaml — para ajustarlo
+discovery:
+  enabled: true       # false = solo lo que declares a mano
+  steam: true
+  cache_hours: 24.0
 ```
 
-**Revisa la lista antes de `--write`**: lo que quede ahí es la allowlist, o sea
-lo único que el asistente puede abrir. Para acotarla:
+**Lo declarado a mano en `apps:` siempre gana.** Si pusiste la ruta exacta de
+Spotify porque la detección fallaba, el descubrimiento no te la pisa.
+
+> **Nota de seguridad.** Con el autodescubrimiento la allowlist deja de ser una
+> lista curada y pasa a ser "todo lo instalado". El límite sigue existiendo
+> —solo se abre software ya presente en el equipo, y el LLM sigue sin poder
+> ejecutar comandos arbitrarios— pero es una frontera más ancha que antes. Pon
+> `discovery.enabled: false` si prefieres controlar exactamente qué se abre.
+
+Para ver qué encontró:
 
 ```powershell
-python scripts/discover_apps.py --filter steam --write   # solo juegos
-python scripts/discover_apps.py --no-steam --limit 30 --write
+python scripts/diagnose_apps.py
 ```
-
-`--write` reemplaza solo la sección `apps:` y hace copia de seguridad, así que
-la ganancia del micrófono y el resto de tus ajustes se conservan.
 
 ### Cuatro fuentes, porque ninguna las ve todas
 
@@ -330,6 +340,27 @@ apps:
     command: 'C:\Users\TU_USUARIO\AppData\Roaming\Spotify\Spotify.exe'
     process: Spotify
 ```
+
+### El asistente no entiende una frase
+
+Cuando una frase llega al LLM en vez de resolverse en el catálogo, el log lo
+dice con nombre y apellidos:
+
+```
+INFO  asistente.pipeline: AL CATALOGO LE FALTA ESTA FRASE: 'ponme algo tranquilo'
+      -> anadela a `examples` del intent correspondiente en commands.yaml
+```
+
+Copia esa frase a `examples` del intent que corresponda y reinicia. Es la forma
+práctica de afinarlo: nadie recuerda después cómo lo dijo exactamente.
+
+Si además **ignora** frases que sí eran para él, arranca con `-v`: verás en el
+log cómo transcribió tu palabra clave, y podrás añadir esa forma a
+`wake_word.phrases`.
+
+**Cuidado con las negaciones.** *"Me gusta esta canción"* (guardar) y *"no me
+gusta esta"* (siguiente) se diferencian en una palabra, y los embeddings manejan
+mal la negación. Si añades ejemplos a un intent con negación, revisa el opuesto.
 
 ### El micrófono capta muy bajo
 

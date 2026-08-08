@@ -10,13 +10,13 @@ Eiffel"), la ruta es otra: el catalogo las manda al LLM via `_fallback`.
 
 from __future__ import annotations
 
-import webbrowser
 from urllib.parse import quote_plus
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from asistente.config import Config
 from asistente.skills.base import Skill, SkillResult
+from asistente.skills.browser import Browser
 
 
 class SearchArgs(BaseModel):
@@ -30,10 +30,11 @@ class WebSearchSkill(Skill):
     args_model = SearchArgs
     description = "Busca algo en internet y abre los resultados en el navegador."
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, browser: Browser) -> None:
         self._search_url = config.search_url
+        self._browser = browser
 
     def execute(self, args: BaseModel) -> SkillResult:
         assert isinstance(args, SearchArgs)
-        webbrowser.open(self._search_url.format(query=quote_plus(args.query)))
+        self._browser.open(self._search_url.format(query=quote_plus(args.query)))
         return SkillResult.silent()

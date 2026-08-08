@@ -147,4 +147,34 @@ sites:
   maps: https://maps.google.com
   traductor: https://translate.google.com
 
-search_url: https://duckduckgo.com/?q={query}
+# ---------------------------------------------------------------------------
+# NAVEGADOR Y BUSCADOR
+# ---------------------------------------------------------------------------
+web:
+  # Navegador en el que se abre TODO: busquedas y paginas.
+  # Conocidos: brave, chrome, firefox, edge, opera, vivaldi.
+  # Cadena vacia ("") = usar el navegador por defecto de Windows.
+  browser: brave
+  # Si no lo encuentra solo, pon la ruta en config.local.yaml:
+  #   web:
+  #     browser_path: 'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe'
+  browser_path: null
+
+  # Buscador. Alternativas:
+  #   Brave Search  https://search.brave.com/search?q={query}
+  #   DuckDuckGo    https://duckduckgo.com/?q={query}
+  search_url: https://www.google.com/search?q={query}
+
+# ---------------------------------------------------------------------------
+# AUTODESCUBRIMIENTO DE APLICACIONES
+# Al arrancar enumera lo instalado (Store, escritorio y juegos de Steam) y lo
+# anade a la allowlist. Lo declarado a mano en `apps:` siempre tiene prioridad.
+#
+# SEGURIDAD: con esto la allowlist deja de ser una lista curada y pasa a ser
+# "todo lo instalado". Ponlo en false si prefieres controlar exactamente que
+# se puede abrir.
+# ---------------------------------------------------------------------------
+discovery:
+  enabled: true
+  steam: true
+  cache_hours: 24.0

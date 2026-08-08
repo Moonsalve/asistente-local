@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from asistente.config import Config, Secrets
+from asistente.discovery.auto import augment_config
 from asistente.logsetup import configure as configure_logging
 from asistente.preflight import run_checks
 from asistente.router.catalog import load_catalog
@@ -57,6 +58,10 @@ def main() -> int:
     if not args.text and not run_checks(config):
         log.error("arranque abortado: corrige lo marcado como error y vuelve a intentarlo")
         return 1
+
+    # Autodescubrimiento: anade lo instalado a la allowlist. Con cache, asi que
+    # solo la primera ejecucion (o una vez al dia) paga el coste de enumerar.
+    config = augment_config(config)
 
     registry, spotify = build_registry(config, secrets)
 
