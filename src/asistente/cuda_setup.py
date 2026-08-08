@@ -66,13 +66,22 @@ def ensure_cuda_dlls() -> list[Path]:
                 continue
             seen.add(dll_dir)
             os.add_dll_directory(str(dll_dir))
-            log.debug("DLL de CUDA registradas: %s", dll_dir)
+            # A INFO y no a DEBUG: cuando el STT falla, lo primero que se
+            # quiere saber es si estos directorios se registraron o no.
+            log.info("CUDA: registrado %s (%d dll)", dll_dir, len(list(dll_dir.glob("*.dll"))))
 
     _already_configured = True
     if not seen:
         log.warning(
             "no se encontraron las DLL de CUDA de los paquetes pip de NVIDIA. "
-            "Si el STT falla con 'cublas64_12.dll is not found', instala: "
-            "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12"
+            'Si el STT falla con "cublas64_12.dll is not found": '
+            'pip install -e ".[gpu]"'
+        )
+    elif not any((d / "cublas64_12.dll").is_file() for d in seen):
+        # Los directorios existen pero no contienen la DLL concreta que
+        # CTranslate2 busca: instalacion incompleta o version de CUDA distinta.
+        log.warning(
+            "CUDA: los directorios de NVIDIA estan pero falta cublas64_12.dll. "
+            "Diagnostico completo: python scripts/diagnose_cuda.py"
         )
     return sorted(seen)

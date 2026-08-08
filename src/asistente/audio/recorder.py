@@ -45,18 +45,20 @@ class UtteranceRecorder:
             total_s += block_s
             collected.append(block)
 
+            # `None` significa que aun no hay un frame completo para el modelo
+            # (los bloques del microfono y los frames del VAD no miden lo
+            # mismo). Ese tiempo SIGUE contando como silencio: descartarlo hacia
+            # que el corte llegase mas tarde de lo configurado.
             prob = self._vad.speech_probability(block)
-            if prob is None:
-                continue
-
-            if prob >= self._config.speech_threshold:
+            if prob is not None and prob >= self._config.speech_threshold:
                 speaking = True
                 silence_s = 0.0
             elif speaking:
                 silence_s += block_s
-                if silence_s >= self._config.silence_s:
-                    log.debug("fin de frase tras %.2f s de silencio", silence_s)
-                    break
+
+            if speaking and silence_s >= self._config.silence_s:
+                log.debug("fin de frase tras %.2f s de silencio", silence_s)
+                break
 
             if total_s >= self._config.max_utterance_s:
                 log.warning("corte por duracion maxima (%.1f s)", total_s)

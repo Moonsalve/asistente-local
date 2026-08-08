@@ -17,15 +17,50 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
 
 log = logging.getLogger(__name__)
 
 
+def models_dir() -> Path:
+    import openwakeword
+
+    return Path(openwakeword.__file__).parent / "resources" / "models"
+
+
+def models_are_installed() -> bool:
+    """openWakeWord NO incluye los .onnx en el paquete pip.
+
+    El wheel trae solo el codigo; los modelos (el de la palabra clave, el
+    melspectrogram, el embedding y el VAD de Silero) hay que descargarlos una
+    vez. Si no, el sintoma es un NO_SUCHFILE de onnxruntime sobre un fichero
+    dentro del propio site-packages, que despista mucho porque parece una
+    instalacion corrupta.
+    """
+    directory = models_dir()
+    # melspectrogram y embedding_model los necesita CUALQUIER wake word;
+    # silero_vad lo usa ademas nuestro endpointing.
+    required = ("melspectrogram.onnx", "embedding_model.onnx", "silero_vad.onnx")
+    return all((directory / name).is_file() for name in required)
+
+
+def download_models() -> None:
+    """Descarga los modelos de openWakeWord (~30 MB). Idempotente."""
+    import openwakeword.utils
+
+    log.info("descargando los modelos de openWakeWord (solo la primera vez)...")
+    openwakeword.utils.download_models()
+    log.info("modelos de openWakeWord listos en %s", models_dir())
+
+
 class WakeWordDetector:
     def __init__(self, model: str = "hey_jarvis", threshold: float = 0.5, refractory_s: float = 2.0) -> None:
         from openwakeword.model import Model
+
+        if not models_are_installed():
+            download_models()
 
         self._model = Model(wakeword_models=[model], inference_framework="onnx")
         self._key = model

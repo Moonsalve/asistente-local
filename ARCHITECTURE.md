@@ -136,6 +136,20 @@ cerca del micrófono— es disparar una acción que ya estaba autorizada. Las ap
 que se pueden abrir y cerrar están en `config.yaml`; lo que no esté ahí no
 existe. Cubierto por `tests/test_registry.py`.
 
+### Silero VAD: dos versiones con APIs incompatibles
+
+El modelo que trae openWakeWord es el **v4** (`input`, `sr`, `h`, `c` — estados
+LSTM separados de forma `(2, batch, 64)`, frames de 1536 muestras). El v5 usa un
+estado unificado de 128 y frames de 512. Pasar el feed equivocado da un
+`ValueError: Required inputs (['h', 'c']) are missing` que no menciona versiones
+en ningún momento.
+
+`vad.py` detecta la versión leyendo los nombres de las entradas del modelo, en
+vez de asumir una. Como efecto secundario, el frame pasa a 96 ms en v4, lo que
+destapó un fallo de contabilidad en el endpointing: los bloques sin lectura
+completa no contaban como silencio y el corte llegaba tarde. Cubierto ahora por
+`tests/test_recorder.py`.
+
 ### Modelos calientes desde el arranque
 
 La primera inferencia en CUDA compila kernels y cuesta segundos. Todos los
@@ -147,15 +161,28 @@ nunca de VRAM.
 
 ## Mediciones
 
-Router, en CPU de macOS (Apple Silicon), 115 anclas semánticas:
+En CPU de macOS (Apple Silicon). Las capas que dependen de CUDA siguen sin medir.
 
-| Etapa | p50 | p95 |
+| Etapa | Coste | Nota |
 |---|---|---|
-| Literal | 0.00 ms | 0.00 ms |
-| Semántica | **2.09 ms** | 2.78 ms |
+| Router literal | 0.00 ms | lookup de diccionario |
+| Router semántico | **2.09 ms** p50 | 115 anclas; se estimaban 10–20 ms |
+| Wake word | 1.19 ms | por bloque de 80 ms → ~1.5% de un núcleo |
+| VAD Silero | 0.11 ms | por bloque de 80 ms |
+| TTS Piper (en frío) | 555 ms | **primera** síntesis |
+| TTS Piper (en caliente) | 43–69 ms | tras el warmup |
 
-La estimación inicial del plan era 10–20 ms; el coste real es 5-10× menor, así
-que la etapa semántica es prácticamente gratis frente al endpointing del VAD.
+**El calentamiento importa en las tres capas, no solo en CUDA.** Piper pasa de
+555 ms a ~65 ms tras la primera síntesis: un factor de 9. Sin warmup, la primera
+respuesta hablada llega medio segundo tarde justo cuando más se nota. Lo mismo
+con Whisper (compilación de kernels) y con Ollama (carga de 2.5 GB a VRAM, **42.8 s
+medidos en el PC Windows** con el disco frío).
+
+Calidad de voz: `es_MX-claude-high` y `es_MX-ald-medium` tardan lo mismo en
+caliente (62 vs 69 ms), así que no hay razón para bajar de `high`.
+
+Silero VAD sobre voz real sintetizada con Piper: máximo 1.000, media 0.858.
+Sobre silencio: 0.059. El umbral de 0.5 queda bien centrado entre ambos.
 
 **Dónde está realmente la latencia.** El silencio que hay que esperar para dar
 la frase por terminada (`vad.silence_s`, 0.35 s) es el 40–50% del total: más que

@@ -96,6 +96,23 @@ def check_tts_voice(config: Config) -> Problem | None:
     )
 
 
+def check_wakeword_models() -> Problem | None:
+    """Los modelos de openWakeWord se descargan aparte del paquete pip.
+
+    No es fatal porque el detector los descarga solo la primera vez que se
+    construye; esto solo sirve para avisar de que habra una descarga.
+    """
+    from asistente.audio.wakeword import models_are_installed
+
+    if models_are_installed():
+        return None
+    return Problem(
+        fatal=False,
+        title="Faltan los modelos de openWakeWord (no vienen en el paquete pip)",
+        fix="Se descargaran solos al arrancar (~30 MB). Manual: python scripts/download_models.py",
+    )
+
+
 def check_ollama(config: Config) -> Problem | None:
     """Comprueba que Ollama responde y tiene descargado el modelo."""
     try:
@@ -134,6 +151,7 @@ def run_checks(config: Config) -> bool:
         for problem in (
             check_interpreter(),
             check_tts_voice(config),
+            check_wakeword_models(),
             check_cuda_packages(),
             check_ollama(config),
         )

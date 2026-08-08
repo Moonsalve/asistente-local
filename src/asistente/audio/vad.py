@@ -12,8 +12,22 @@ Se usa Silero VAD (ONNX, ~1 MB, <1 ms por frame) en vez de un umbral de energia
 porque este ultimo confunde el ruido de fondo con voz y, en una habitacion con
 musica sonando -que es precisamente nuestro caso de uso-, nunca detecta silencio.
 
-Silero exige frames de EXACTAMENTE 512 muestras a 16 kHz. Como los bloques del
-microfono no tienen por que medir eso, aqui se reagrupan.
+Silero exige frames de un tamano EXACTO. Como los bloques del microfono no
+tienen por que medirlo, aqui se reagrupan.
+
+DOS VERSIONES DEL MODELO, DOS APIs
+----------------------------------
+Silero cambio de firma entre v4 y v5 y ninguna es compatible con la otra:
+
+    v4: inputs (input, sr, h, c)   estados LSTM separados, (2, batch, 64)
+        frames de 1536 muestras a 16 kHz
+    v5: inputs (input, sr, state)  estado unificado, (2, batch, 128)
+        frames de 512 muestras a 16 kHz
+
+El que trae openWakeWord es el v4. Como el modelo se puede sustituir por otro
+descargado aparte, aqui se detecta la version leyendo los nombres de las
+entradas en vez de asumir una: pasar el feed equivocado da un ValueError
+("Required inputs (['h', 'c']) are missing") que no dice nada de versiones.
 """
 
 from __future__ import annotations
@@ -25,8 +39,9 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-#: Impuesto por el modelo Silero a 16 kHz. No es configurable.
-FRAME_SAMPLES = 512
+#: Muestras por frame a 16 kHz, impuesto por cada version del modelo.
+FRAME_SAMPLES_V4 = 1536
+FRAME_SAMPLES_V5 = 512
 
 
 def _default_model_path() -> Path:
@@ -48,13 +63,28 @@ class SileroVad:
         opts.intra_op_num_threads = 1
         self._session = ort.InferenceSession(str(path), opts, providers=["CPUExecutionProvider"])
         self._sample_rate = sample_rate
+
+        input_names = {i.name for i in self._session.get_inputs()}
+        self._is_v4 = "h" in input_names and "c" in input_names
+        self.frame_samples = FRAME_SAMPLES_V4 if self._is_v4 else FRAME_SAMPLES_V5
+        log.debug(
+            "Silero VAD %s cargado (%s, frames de %d muestras)",
+            "v4" if self._is_v4 else "v5",
+            path.name,
+            self.frame_samples,
+        )
+
         self._pending = np.zeros(0, dtype=np.float32)
         self.reset()
 
     def reset(self) -> None:
         """Reinicia el estado recurrente. Obligatorio entre frases: el LSTM
         arrastra contexto y sin resetear la deteccion se degrada."""
-        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        if self._is_v4:
+            self._h = np.zeros((2, 1, 64), dtype=np.float32)
+            self._c = np.zeros((2, 1, 64), dtype=np.float32)
+        else:
+            self._state = np.zeros((2, 1, 128), dtype=np.float32)
         self._pending = np.zeros(0, dtype=np.float32)
 
     def speech_probability(self, block: np.ndarray) -> float | None:
@@ -64,21 +94,24 @@ class SileroVad:
         de 80 ms, que haya voz en cualquier parte significa que estas hablando.
         """
         self._pending = np.concatenate([self._pending, block.astype(np.float32)])
-        if len(self._pending) < FRAME_SAMPLES:
+        if len(self._pending) < self.frame_samples:
             return None
 
         best: float | None = None
-        while len(self._pending) >= FRAME_SAMPLES:
-            frame = self._pending[:FRAME_SAMPLES]
-            self._pending = self._pending[FRAME_SAMPLES:]
-            out, self._state = self._session.run(
-                None,
-                {
-                    "input": frame.reshape(1, -1),
-                    "state": self._state,
-                    "sr": np.array(self._sample_rate, dtype=np.int64),
-                },
-            )
+        sr = np.array(self._sample_rate, dtype=np.int64)
+        while len(self._pending) >= self.frame_samples:
+            frame = self._pending[: self.frame_samples].reshape(1, -1)
+            self._pending = self._pending[self.frame_samples :]
+
+            if self._is_v4:
+                out, self._h, self._c = self._session.run(
+                    None, {"input": frame, "sr": sr, "h": self._h, "c": self._c}
+                )
+            else:
+                out, self._state = self._session.run(
+                    None, {"input": frame, "sr": sr, "state": self._state}
+                )
+
             prob = float(out[0][0])
             best = prob if best is None else max(best, prob)
         return best

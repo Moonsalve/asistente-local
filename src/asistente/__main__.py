@@ -151,6 +151,7 @@ def _run_voice_mode(config: Config, router: object, registry: object) -> int:
     transcriber.warmup()
 
     speaker = Speaker(config.tts.voice_model, config.tts.speed)
+    speaker.warmup()
     wake_word = WakeWordDetector(
         config.wake_word.model,
         config.wake_word.threshold,
