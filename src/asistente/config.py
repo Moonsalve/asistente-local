@@ -24,6 +24,18 @@ class AudioConfig(BaseModel):
     #: para listar los indices disponibles.
     input_device: int | None = None
     sample_rate: int = 16_000
+
+    #: Amplificacion por software de la senal de entrada, para microfonos que
+    #: capturan bajo incluso con el volumen de Windows al maximo.
+    #:
+    #: Afecta al VAD y a la palabra clave, que ven los bloques segun llegan. NO
+    #: sustituye a la normalizacion previa al STT (`stt.normalize_audio`), que
+    #: opera sobre la frase completa: son dos problemas distintos.
+    #:
+    #: Amplifica tambien el ruido de fondo, asi que no conviene pasarse. El
+    #: valor exacto que necesita TU microfono lo calcula:
+    #:     python scripts/diagnose_audio.py
+    gain: float = Field(default=1.0, gt=0.0, le=50.0)
     #: Tamano de bloque del callback. 80 ms a 16 kHz: suficientemente pequeno
     #: para no anadir latencia perceptible, suficientemente grande para no
     #: saturar el hilo de audio.
@@ -86,6 +98,14 @@ class SttConfig(BaseModel):
     #: Sin contexto entre turnos: cada comando es independiente, y arrastrar el
     #: anterior invita a alucinaciones.
     condition_on_previous_text: bool = False
+
+    #: Normaliza el pico de cada frase antes de transcribirla. Whisper se
+    #: entreno con audio a nivel normal y transcribe notablemente peor una
+    #: grabacion muy floja. Es gratis (una multiplicacion) y no toca el ruido
+    #: relativo, asi que conviene dejarlo activado.
+    normalize_audio: bool = True
+    #: Pico objetivo. 0.95 y no 1.0 para dejar margen y no recortar.
+    normalize_peak: float = Field(default=0.95, gt=0.0, le=1.0)
 
 
 class RouterConfig(BaseModel):

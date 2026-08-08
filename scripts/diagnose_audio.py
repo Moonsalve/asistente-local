@@ -53,6 +53,7 @@ def main() -> int:
     parser.add_argument("--device", type=int, default=None)
     parser.add_argument("--seconds", type=float, default=5.0)
     parser.add_argument("--model", default="hey_jarvis")
+    parser.add_argument("--gain", type=float, default=1.0, help="ganancia a aplicar en la prueba")
     args = parser.parse_args()
 
     if args.list:
@@ -81,7 +82,7 @@ def main() -> int:
             block, overflowed = stream.read(BLOCK)
             if overflowed:
                 print("  aviso: overflow del buffer de entrada")
-            mono = block[:, 0]
+            mono = np.clip(block[:, 0] * args.gain, -1.0, 1.0) if args.gain != 1.0 else block[:, 0]
             frames.append(mono)
 
             if (prob := vad.speech_probability(mono)) is not None:
@@ -98,13 +99,39 @@ def main() -> int:
     rms = float(np.sqrt(np.mean(audio**2)))
     peak = float(np.max(np.abs(audio)))
 
+    # Nivel de la parte hablada, no de toda la grabacion: promediar los
+    # silencios hunde el RMS y da una ganancia recomendada demasiado alta.
+    bloques_rms = np.array([float(np.sqrt(np.mean(f**2))) for f in frames])
+    umbral_voz = max(bloques_rms.mean(), 1e-6)
+    voz = bloques_rms[bloques_rms > umbral_voz]
+    rms_voz = float(voz.mean()) if voz.size else rms
+
     print("=" * 70)
     print("RESULTADOS")
     print("=" * 70)
+    if args.gain != 1.0:
+        print(f"  ganancia aplicada     : x{args.gain:.1f}")
     print(f"  nivel medio (RMS)     : {rms:.4f}")
+    print(f"  nivel al hablar (RMS) : {rms_voz:.4f}   <- el que importa")
     print(f"  pico                  : {peak:.4f}")
     print(f"  VAD  max / media      : {max(probs):.3f} / {sum(probs) / len(probs):.3f}")
     print(f"  wake word max         : {max(scores):.3f}   (umbral por defecto 0.5)")
+
+    # Objetivo: voz alrededor de RMS 0.05, que es un nivel de conversacion
+    # normal y donde el VAD y Whisper trabajan comodos.
+    objetivo = 0.05
+    if rms_voz > 1e-6:
+        sugerida = objetivo / rms_voz * args.gain
+        # Techo por el pico: no tiene sentido una ganancia que sature.
+        if peak > 1e-6:
+            sugerida = min(sugerida, 0.95 / peak * args.gain)
+        sugerida = max(1.0, min(sugerida, 50.0))
+        print(f"\n  GANANCIA RECOMENDADA  : {sugerida:.1f}")
+        if sugerida > 1.2:
+            print("\n  En config.yaml:")
+            print("    audio:")
+            print(f"      gain: {sugerida:.1f}")
+            print(f"\n  Compruebalo con:  python scripts/diagnose_audio.py --gain {sugerida:.1f}")
 
     print("\n" + "=" * 70)
     print("VEREDICTO")
@@ -114,10 +141,10 @@ def main() -> int:
         print("     - Comprueba que no este silenciado en Windows.")
         print("     - Ajustes > Privacidad > Microfono: permitir a las apps de escritorio.")
         print("     - Prueba otro dispositivo:  python scripts/diagnose_audio.py --list")
-    elif rms < 0.005:
-        print("  2. CAPTURA MUY BAJO. El VAD no lo va a considerar voz.")
-        print("     - Sube la ganancia del microfono en Windows (Sonido > Grabacion > Niveles).")
-        print("     - Acercate al microfono.")
+    elif rms_voz < 0.005:
+        print("  2. CAPTURA MUY BAJO.")
+        print("     Si ya tienes el volumen de Windows al maximo, usa la ganancia por")
+        print("     software: mira la GANANCIA RECOMENDADA de arriba y ponla en config.yaml.")
     elif max(probs) < 0.5:
         print("  2b. HAY SENAL PERO EL VAD NO DETECTA VOZ.")
         print("     - Puede ser ruido de fondo constante en vez de habla.")

@@ -30,13 +30,17 @@ class MicrophoneStream:
         block_size: int = 1280,
         device: int | None = None,
         preroll_s: float = 0.3,
+        gain: float = 1.0,
     ) -> None:
         self._sample_rate = sample_rate
         self._block_size = block_size
         self._device = device
+        self._gain = gain
         self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=64)
         self._preroll = deque(maxlen=max(1, int(preroll_s * sample_rate / block_size)))
         self._stream: object | None = None
+        self._clipped_blocks = 0
+        self._total_blocks = 0
 
     @property
     def sample_rate(self) -> int:
@@ -70,7 +74,11 @@ class MicrophoneStream:
     def _on_audio(self, indata: np.ndarray, frames: int, time_info: object, status: object) -> None:
         if status:
             log.warning("estado del stream de audio: %s", status)
+
         block = indata[:, 0].copy()
+        if self._gain != 1.0:
+            block = self._amplify(block)
+
         try:
             self._queue.put_nowait(block)
         except queue.Full:
@@ -89,3 +97,33 @@ class MicrophoneStream:
     def preroll_audio(self) -> np.ndarray:
         """Audio inmediatamente anterior al momento actual."""
         return np.concatenate(list(self._preroll)) if self._preroll else np.zeros(0, np.float32)
+
+    def _amplify(self, block: np.ndarray) -> np.ndarray:
+        """Aplica la ganancia recortando a [-1, 1].
+
+        Se recorta en vez de dejar que desborde porque un float fuera de rango
+        produce artefactos que el VAD interpreta como habla, justo lo contrario
+        de lo que se busca.
+
+        Se lleva la cuenta de cuanto se recorta: si pasa a menudo, la ganancia
+        esta demasiado alta y estamos distorsionando la voz, que transcribe
+        PEOR que una senal floja.
+        """
+        self._total_blocks += 1
+        amplified = block * self._gain
+
+        if np.max(np.abs(amplified)) > 1.0:
+            self._clipped_blocks += 1
+            # Avisar de forma periodica, no en cada bloque: son 12 por segundo.
+            if self._clipped_blocks % 50 == 1:
+                ratio = self._clipped_blocks / self._total_blocks
+                log.warning(
+                    "el audio satura con gain=%.1f (%.0f%% de los bloques). "
+                    "Bajalo en config.yaml: la voz distorsionada transcribe peor "
+                    "que la floja.",
+                    self._gain,
+                    ratio * 100,
+                )
+            amplified = np.clip(amplified, -1.0, 1.0)
+
+        return amplified.astype(np.float32)

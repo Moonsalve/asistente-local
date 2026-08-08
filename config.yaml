@@ -7,6 +7,16 @@ audio:
   sample_rate: 16000
   block_size: 1280
 
+  # Amplificacion por software, para microfonos que capturan bajo incluso con
+  # el volumen de Windows al maximo.
+  #
+  # 8.0 es un punto de partida. El valor exacto para TU microfono lo calcula:
+  #     python scripts/diagnose_audio.py
+  #
+  # Si ves en el log "el audio satura con gain=...", bajalo: la voz
+  # distorsionada se transcribe PEOR que la floja.
+  gain: 8.0
+
 wake_word:
   # "transcript": transcribe lo que oye y busca la clave en el TEXTO. Acepta
   #   cualquier palabra en espanol sin entrenar nada. Es lo que permite usar
@@ -44,6 +54,11 @@ stt:
   language: es
   beam_size: 1
   condition_on_previous_text: false
+  # Sube cada frase al nivel que Whisper espera. Problema distinto al de
+  # `audio.gain`: aquel ayuda al VAD en vivo, este al STT sobre la frase ya
+  # grabada. Hacen falta los dos.
+  normalize_audio: true
+  normalize_peak: 0.95
 
 router:
   embedding_model: intfloat/multilingual-e5-small

@@ -192,6 +192,7 @@ def _run_voice_mode(config: Config, router: object, registry: object) -> int:
         block_size=config.audio.block_size,
         device=config.audio.input_device,
         preroll_s=config.vad.preroll_s,
+        gain=config.audio.gain,
     ) as mic:
         assistant = Assistant(
             mic,

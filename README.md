@@ -138,15 +138,36 @@ opción eficiente es entrenar un modelo propio de "Apolo" y pasar a
 Si el asistente ignora frases que sí eran para él, mira el log en modo `-v`:
 verás cómo transcribió tu palabra clave. Añade esa forma a `phrases`.
 
-### El micrófono no detecta nada
+### El micrófono capta muy bajo
 
 ```powershell
 python scripts/diagnose_audio.py --list    # ver los micrófonos disponibles
 python scripts/diagnose_audio.py           # grabar 5 s y diagnosticar
 ```
 
-Distingue las cuatro causas posibles —micrófono mudo, ganancia baja, VAD que no
-oye voz, o umbral demasiado alto— y dice cuál es la tuya.
+Distingue las cuatro causas posibles —micrófono mudo, nivel bajo, VAD que no
+oye voz, o umbral demasiado alto— y **calcula la ganancia exacta** que necesita
+tu micrófono. Compruébala antes de fijarla:
+
+```powershell
+python scripts/diagnose_audio.py --gain 8
+```
+
+**Dos ajustes distintos, para dos problemas distintos.** Es fácil confundirlos:
+
+| Ajuste | Cuándo actúa | A quién ayuda |
+|---|---|---|
+| `audio.gain` | sobre los bloques según llegan | VAD y palabra clave |
+| `stt.normalize_audio` | sobre la frase ya grabada | Whisper |
+
+Aplicar solo uno deja el otro problema sin resolver. Medido sobre voz atenuada
+a 1/50: el VAD seguía detectando habla (0.951 de pico) pero su probabilidad
+media caía de 0.859 a **0.589** — con ruido de fondo real ese margen desaparece.
+Con `gain: 10` vuelve a 0.816.
+
+No te pases con la ganancia: amplifica también el ruido, y si satura verás
+`el audio satura con gain=...` en el log. **La voz distorsionada se transcribe
+peor que la floja.**
 
 ---
 

@@ -42,6 +42,28 @@ MIN_AUDIO_S = 0.2
 #: con una velocidad tolerable.
 _CPU_COMPUTE_TYPE = "int8"
 
+#: Por debajo de este pico, la grabacion es practicamente silencio y escalarla
+#: solo amplificaria el ruido hasta hacerlo sonar como voz.
+_MIN_PEAK_TO_NORMALIZE = 1e-4
+
+
+def normalize_peak(audio: np.ndarray, target: float = 0.95) -> np.ndarray:
+    """Escala el audio para que su pico llegue a `target`.
+
+    Whisper se entreno con audio a nivel normal y transcribe bastante peor una
+    grabacion floja. Normalizar el pico es una sola multiplicacion y no cambia
+    la relacion senal/ruido: no "limpia" nada, solo pone la frase al nivel que
+    el modelo espera.
+
+    Va aparte de `audio.gain` porque resuelven cosas distintas: la ganancia
+    ajusta la senal en vivo para que el VAD y la palabra clave la detecten;
+    esto ajusta la frase ya grabada para que el STT la entienda.
+    """
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak < _MIN_PEAK_TO_NORMALIZE:
+        return audio
+    return (audio * (target / peak)).astype(np.float32)
+
 
 class Transcriber:
     def __init__(self, config: SttConfig) -> None:
@@ -102,6 +124,9 @@ class Transcriber:
     def transcribe(self, audio: np.ndarray, sample_rate: int = 16_000) -> str:
         if audio.size < MIN_AUDIO_S * sample_rate:
             return ""
+
+        if self._config.normalize_audio:
+            audio = normalize_peak(audio, self._config.normalize_peak)
 
         segments, _ = self._model.transcribe(  # type: ignore[attr-defined]
             audio.astype(np.float32),
