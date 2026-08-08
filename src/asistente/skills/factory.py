@@ -13,7 +13,13 @@ from asistente.skills.base import Skill
 from asistente.skills.media import NextTrackSkill, PlayPauseSkill, PreviousTrackSkill
 from asistente.skills.opening import OpenTargetSkill
 from asistente.skills.registry import SkillRegistry
-from asistente.skills.spotify import SpotifyClient, SpotifyPlaySkill
+from asistente.skills.spotify import (
+    LikeSkill,
+    ShuffleSkill,
+    SpotifyClient,
+    SpotifyPlaySkill,
+    WhatSongSkill,
+)
 from asistente.skills.system import MuteSkill, TimeSkill, VolumeSetSkill, VolumeStepSkill
 from asistente.skills.web import WebSearchSkill
 
@@ -29,6 +35,9 @@ def build_registry(config: Config, secrets: Secrets) -> tuple[SkillRegistry, Spo
         PreviousTrackSkill(spotify, use_keys),
         PlayPauseSkill(spotify, use_keys),
         SpotifyPlaySkill(spotify),
+        WhatSongSkill(spotify),
+        LikeSkill(spotify),
+        ShuffleSkill(spotify),
         VolumeStepSkill(),
         VolumeSetSkill(),
         MuteSkill(),

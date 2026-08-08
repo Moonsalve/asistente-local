@@ -77,12 +77,29 @@ def _lookup_app_paths(command: str) -> Path | None:
     return None
 
 
+#: Prefijo con el que Windows identifica las apps de la Microsoft Store.
+APPS_FOLDER = "shell:AppsFolder\\"
+
+
 def launch(command: str) -> bool:
     """Lanza la aplicacion. False si no se pudo.
 
     `command` viene SIEMPRE de la allowlist de `config.yaml`, nunca del texto
-    transcrito ni del LLM.
+    transcrito ni del LLM. Admite cuatro tipos de destino, porque en Windows no
+    todo se abre igual:
+
+        C:\\...\\app.exe              ejecutable normal
+        C:\\...\\acceso directo.lnk   atajo del menu inicio
+        shell:AppsFolder\\Pkg!App     app de la Microsoft Store
+        steam://rungameid/440        juego de Steam (o cualquier URI)
     """
+    if command.startswith(APPS_FOLDER):
+        return _launch_store_app(command)
+    if "://" in command:
+        return _launch_uri(command)
+    if command.lower().endswith(".lnk"):
+        return _launch_shortcut(command)
+
     if (executable := resolve_executable(command)) is not None:
         try:
             subprocess.Popen(  # noqa: S603
@@ -121,5 +138,73 @@ def launch(command: str) -> bool:
             "diagnostico: python scripts/diagnose_apps.py",
             command,
         )
+        return False
+    return True
+
+
+def _launch_store_app(command: str) -> bool:
+    """Apps de la Microsoft Store.
+
+    No tienen un .exe que se pueda ejecutar: viven en un contenedor y solo el
+    shell sabe arrancarlas. `explorer.exe shell:AppsFolder\\<id>` es la via
+    soportada.
+    """
+    if sys.platform != "win32":
+        log.warning("las apps de la Store solo se pueden abrir en Windows")
+        return False
+    try:
+        subprocess.Popen(["explorer.exe", command])  # noqa: S603, S607
+    except OSError as exc:
+        log.warning("no se pudo abrir la app de la Store %r: %s", command, exc)
+        return False
+    return True
+
+
+def _launch_uri(uri: str) -> bool:
+    """URIs registradas: `steam://rungameid/440`, `spotify:track:...`, https://...
+
+    Es asi como se lanza un juego de Steam: no se ejecuta su .exe directamente
+    porque entonces el cliente no lo registra como sesion de juego (ni cuenta
+    horas, ni funciona el overlay, ni los DRM que dependen de el).
+    """
+    if sys.platform == "win32":
+        try:
+            import os
+
+            os.startfile(uri)  # noqa: S606
+        except OSError as exc:
+            log.warning("no se pudo abrir %r: %s", uri, exc)
+            return False
+        return True
+
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    try:
+        subprocess.Popen([opener, uri])  # noqa: S603
+    except OSError as exc:
+        log.warning("no se pudo abrir %r: %s", uri, exc)
+        return False
+    return True
+
+
+def _launch_shortcut(path: str) -> bool:
+    """Accesos directos del menu inicio.
+
+    Se lanza el .lnk tal cual en vez de resolver a que apunta: el atajo lleva
+    ademas el directorio de trabajo y los argumentos que la app necesita, y
+    algunas (los lanzadores de juegos, sobre todo) no arrancan bien sin ellos.
+    """
+    target = Path(path)
+    if not target.is_file():
+        log.warning("el acceso directo no existe: %s", path)
+        return False
+    if sys.platform != "win32":
+        log.warning("los accesos directos .lnk solo funcionan en Windows")
+        return False
+    try:
+        import os
+
+        os.startfile(str(target))  # noqa: S606
+    except OSError as exc:
+        log.warning("no se pudo abrir %s: %s", target, exc)
         return False
     return True

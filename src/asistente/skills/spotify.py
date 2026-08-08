@@ -138,6 +138,52 @@ class SpotifyClient:
             return False
         return True
 
+    def current_track(self) -> tuple[str, str] | None:
+        """(titulo, artistas) de lo que suena, o None si no suena nada."""
+        if self._client is None:
+            return None
+        try:
+            playing = self._client.current_user_playing_track()
+        except Exception:
+            log.exception("no se pudo consultar la cancion actual")
+            return None
+
+        item = (playing or {}).get("item")
+        if not item:
+            return None
+        artistas = ", ".join(a["name"] for a in item.get("artists", [])) or "artista desconocido"
+        return str(item.get("name", "")), artistas
+
+    def save_current_track(self) -> str | None:
+        """Guarda en favoritos lo que suena. Devuelve el titulo, o None.
+
+        Necesita el permiso `user-library-modify`. Si autorizaste antes de que
+        existiera este comando, hay que borrar el token cacheado para que
+        Spotify vuelva a pedir permisos (ver la guia del README).
+        """
+        if self._client is None:
+            return None
+        try:
+            playing = self._client.current_user_playing_track()
+            item = (playing or {}).get("item")
+            if not item:
+                return None
+            self._client.current_user_saved_tracks_add([item["id"]])
+        except Exception:
+            log.exception("no se pudo guardar la cancion")
+            return None
+        return str(item.get("name", ""))
+
+    def set_shuffle(self, enabled: bool) -> bool:
+        if self._client is None or (device := self._active_device()) is None:
+            return False
+        try:
+            self._client.shuffle(enabled, device_id=device)
+        except Exception:
+            log.exception("no se pudo cambiar el modo aleatorio")
+            return False
+        return True
+
     def _simple_action(self, method: str) -> bool:
         if self._client is None or (device := self._active_device()) is None:
             return False
@@ -171,3 +217,55 @@ class SpotifyPlaySkill(Skill):
         if not self._client.play_query(args.query):
             return SkillResult.failed(f"No pude reproducir {args.query} en Spotify.")
         return SkillResult.silent()
+
+
+class WhatSongSkill(Skill):
+    name = "spotify.what_song"
+    description = "Dice que cancion esta sonando ahora mismo."
+
+    def __init__(self, client: SpotifyClient) -> None:
+        self._client = client
+
+    def execute(self, args: BaseModel) -> SkillResult:
+        track = self._client.current_track()
+        if track is None:
+            return SkillResult.failed("No hay nada sonando en Spotify.")
+        title, artist = track
+        return SkillResult.says(f"{title}, de {artist}.")
+
+
+class LikeSkill(Skill):
+    name = "spotify.like"
+    description = "Guarda la cancion actual en tus canciones favoritas de Spotify."
+
+    def __init__(self, client: SpotifyClient) -> None:
+        self._client = client
+
+    def execute(self, args: BaseModel) -> SkillResult:
+        track = self._client.save_current_track()
+        if track is None:
+            return SkillResult.failed("No pude guardar la canción.")
+        return SkillResult.says(f"Guardada: {track}.")
+
+
+class ShuffleArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Viene de fixed_args del catalogo: hay un intent para activar y otro
+    #: para desactivar, y asi la frase no tiene que llevar el valor.
+    enabled: bool = True
+
+
+class ShuffleSkill(Skill):
+    name = "spotify.shuffle"
+    args_model = ShuffleArgs
+    description = "Activa o desactiva la reproduccion aleatoria."
+
+    def __init__(self, client: SpotifyClient) -> None:
+        self._client = client
+
+    def execute(self, args: BaseModel) -> SkillResult:
+        assert isinstance(args, ShuffleArgs)
+        if not self._client.set_shuffle(args.enabled):
+            return SkillResult.failed("No pude cambiar el modo aleatorio.")
+        return SkillResult.says("Aleatorio activado." if args.enabled else "Aleatorio desactivado.")

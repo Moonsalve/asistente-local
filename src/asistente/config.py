@@ -169,9 +169,15 @@ class SpotifyConfig(BaseModel):
 
     enabled: bool = True
     redirect_uri: str = "http://127.0.0.1:8888/callback"
+    #: Permisos que se piden al autorizar. Si anades uno DESPUES de haber
+    #: autorizado, hay que borrar el token cacheado para que vuelva a pedirlo:
+    #: el guardado solo sirve para los permisos con los que se creo.
     scopes: tuple[str, ...] = (
-        "user-modify-playback-state",
-        "user-read-playback-state",
+        "user-modify-playback-state",   # play, pausa, siguiente, volumen
+        "user-read-playback-state",     # saber que dispositivo esta activo
+        "user-read-currently-playing",  # "que cancion es esta"
+        "user-library-modify",          # "me gusta esta cancion"
+        "user-library-read",
     )
     #: Si la API falla o no hay dispositivo activo, se recurre a las teclas
     #: multimedia de Windows. Menos capaz pero nunca deja el comando sin efecto.

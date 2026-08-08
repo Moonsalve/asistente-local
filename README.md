@@ -107,6 +107,142 @@ PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a f
 
 ---
 
+## Aplicaciones: autodescubrimiento
+
+No hace falta escribir la lista a mano. Enumera lo instalado —apps de la
+Microsoft Store, de escritorio y juegos de Steam— y genera el bloque `apps:`:
+
+```powershell
+python scripts/discover_apps.py            # ver qué encuentra
+python scripts/discover_apps.py --write    # escribirlo en config.local.yaml
+python scripts/diagnose_apps.py            # comprobar que todo se localiza
+```
+
+**Revisa la lista antes de `--write`**: lo que quede ahí es la allowlist, o sea
+lo único que el asistente puede abrir. Para acotarla:
+
+```powershell
+python scripts/discover_apps.py --filter steam --write   # solo juegos
+python scripts/discover_apps.py --no-steam --limit 30 --write
+```
+
+`--write` reemplaza solo la sección `apps:` y hace copia de seguridad, así que
+la ganancia del micrófono y el resto de tus ajustes se conservan.
+
+### Cuatro fuentes, porque ninguna las ve todas
+
+| Fuente | Qué aporta |
+|---|---|
+| `Get-StartApps` | apps de la Store y de escritorio; la más completa |
+| Menú Inicio (`.lnk`) | respaldo si PowerShell está restringido |
+| App Paths (registro) | rutas de `.exe` exactas, permite cerrar la app |
+| Steam | los juegos, que **no aparecen en ninguna de las otras** |
+
+### Juegos de Steam
+
+Se leen los manifiestos de Steam en disco (`appmanifest_*.acf`), incluyendo
+bibliotecas repartidas en varios discos. Solo se listan los **instalados**:
+ofrecer abrir algo que solo tienes comprado produciría fallos.
+
+Se lanzan con `steam://rungameid/<id>`, no con el `.exe` del juego. Ejecutar el
+ejecutable directamente se salta al cliente: no cuenta horas, no funciona el
+overlay, no se sincronizan las partidas en la nube, y los juegos con DRM de
+Steam se niegan a arrancar.
+
+Se generan alias automáticos para los títulos largos, que nadie dice enteros:
+*"Counter-Strike 2: Something"* → `Counter-Strike 2`, y siglas cuando son tres
+palabras o más. Puedes añadir los tuyos en `config.local.yaml`:
+
+```yaml
+apps:
+  counter_strike_2:
+    command: 'steam://rungameid/730'
+    aliases: ['Counter-Strike 2', 'cs', 'counter', 'el conter']
+```
+
+---
+
+## Spotify: guía de configuración
+
+Necesitas **Premium**: la Web API bloquea el control de reproducción en cuentas
+gratuitas.
+
+### 1. Crear la aplicación en Spotify
+
+1. Entra en <https://developer.spotify.com/dashboard> con tu cuenta.
+2. **Create app**. Nombre y descripción, lo que quieras.
+3. En **Redirect URI** pon exactamente esto y pulsa *Add*:
+
+   ```
+   http://127.0.0.1:8888/callback
+   ```
+
+   Tiene que coincidir carácter por carácter con `spotify.redirect_uri` de
+   `config.yaml`. Es el error más común: `localhost` **no** vale, Spotify exige
+   `127.0.0.1`.
+4. En **APIs used**, marca *Web API*. Guarda.
+5. Copia el **Client ID** desde *Settings*.
+
+### 2. Poner el Client ID
+
+```powershell
+copy .env.example .env
+```
+
+Edita `.env`:
+
+```
+SPOTIFY_CLIENT_ID=el_client_id_que_copiaste
+SPOTIFY_CLIENT_SECRET=
+```
+
+El secret se deja **vacío a propósito**. Se usa el flujo PKCE, diseñado para
+aplicaciones de escritorio: no hay servidor donde esconder un secreto, así que
+no se usa ninguno. `.env` está en `.gitignore`.
+
+### 3. Autorizar (una sola vez)
+
+Arranca el asistente. Se abrirá el navegador pidiendo permiso; acepta. A partir
+de ahí spotipy guarda un *refresh token* en `%LOCALAPPDATA%\asistente-local\`
+y lo renueva solo. No vuelve a preguntar.
+
+### 4. Comandos disponibles
+
+Con Spotify abierto (hace falta un dispositivo activo):
+
+| Dices | Hace |
+|---|---|
+| *"Apolo, pon la playlist de rock"* | busca y reproduce una playlist |
+| *"Apolo, pon música de los 80"* | idem por género o época |
+| *"Apolo, quiero escuchar a Shakira"* | busca por artista |
+| *"Apolo, ponme el álbum de Pink Floyd"* | busca por álbum |
+| *"Apolo, pásala"* / *"esta no me gusta"* | siguiente canción |
+| *"Apolo, qué canción es esta"* / *"quién canta esto"* | lo dice en voz alta |
+| *"Apolo, me gusta esta canción"* / *"guárdala"* | la añade a tus favoritos |
+| *"Apolo, pon el modo aleatorio"* | activa shuffle |
+| *"Apolo, sube el volumen"* | volumen del sistema |
+
+La búsqueda prueba **playlist → álbum → canción**, en ese orden: *"pon rock"*
+casi siempre significa una playlist, no la primera canción titulada "Rock".
+
+### Si añades comandos que necesitan permisos nuevos
+
+El token guardado solo sirve para los permisos con los que se creó. Al añadir
+`spotify.like` o `spotify.what_song` sobre una autorización antigua, borra el
+token para que Spotify vuelva a pedirlos:
+
+```powershell
+del "$env:LOCALAPPDATA\asistente-local\spotify-token.json"
+```
+
+### Sin Premium, o si falla
+
+Los comandos de reproducción caen a las **teclas multimedia de Windows**, que
+funcionan con cualquier reproductor sin autenticación. Pierdes lo que requiere
+la API: buscar por nombre, saber qué suena y guardar favoritos.
+
+---
+
 ## Configuración: no edites `config.yaml`
 
 `config.yaml` está versionado y trae los valores por defecto del proyecto. Los

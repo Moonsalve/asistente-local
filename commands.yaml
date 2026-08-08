@@ -46,6 +46,13 @@ intents:
       # otra consigo. Hay que declarar ambos lados.
       - pasala
       - saltala
+      # OJO CON LA NEGACION: "me gusta esta cancion" (spotify.like) y "no me
+      # gusta esta" (aqui) se diferencian en una sola palabra, y los embeddings
+      # manejan mal la negacion. Ambos lados necesitan anclas propias y
+      # abundantes; si anades ejemplos a uno, revisa el otro.
+      - brinca esta cancion
+      - esta cancion no
+      - quitala
     confirmation: null
 
   media.previous:
@@ -279,3 +286,56 @@ intents:
       - hazme un resumen de lo que hice hoy
       - quien invento el telefono
       - cual es la capital de australia
+
+  # ---------------------------------------------------------- spotify avanzado
+  # Estos comandos necesitan la Web API: las teclas multimedia no pueden
+  # consultar que suena ni guardar nada. Requieren Premium y los permisos
+  # user-read-currently-playing y user-library-modify (ver README).
+  spotify.what_song:
+    tool: spotify.what_song
+    literal:
+      - que cancion es esta
+    examples:
+      - que cancion es esta
+      - como se llama esta cancion
+      - quien canta esto
+      - de quien es esta cancion
+      - que estoy escuchando
+      - dime el nombre de la cancion
+      - que suena ahora
+    confirmation: null
+
+  spotify.like:
+    tool: spotify.like
+    examples:
+      - me gusta esta cancion
+      - guarda esta cancion
+      - anade esta cancion a mis favoritos
+      - dale like a esta cancion
+      - guardala en favoritos
+      - marca esta cancion como favorita
+      - me encanta esta cancion
+    confirmation: null
+
+  spotify.shuffle_on:
+    tool: spotify.shuffle
+    examples:
+      - pon el modo aleatorio
+      - activa el aleatorio
+      - reproduce en aleatorio
+      - pon las canciones en desorden
+      - mezcla las canciones
+    fixed_args:
+      enabled: true
+    confirmation: null
+
+  spotify.shuffle_off:
+    tool: spotify.shuffle
+    examples:
+      - quita el modo aleatorio
+      - desactiva el aleatorio
+      - reproduce en orden
+      - pon las canciones en orden
+    fixed_args:
+      enabled: false
+    confirmation: null
