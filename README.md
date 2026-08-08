@@ -107,6 +107,40 @@ PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a f
 
 ---
 
+## Configuración: no edites `config.yaml`
+
+`config.yaml` está versionado y trae los valores por defecto del proyecto. Los
+ajustes propios de **tu** máquina —índice del micrófono, ganancia, rutas de
+apps— van en `config.local.yaml`, que está en `.gitignore` y se fusiona encima
+clave a clave:
+
+```yaml
+# config.local.yaml
+audio:
+  input_device: 2
+  gain: 12.0        # solo esta clave; el resto de `audio` se hereda
+```
+
+Parte de `config.local.yaml.example`. Editar `config.yaml` directamente hace
+que `git pull` falle con un conflicto sobre un fichero que en realidad no es
+compartido:
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+        config.yaml
+```
+
+Si ya te ha pasado, mueve tus cambios a `config.local.yaml` y deja `config.yaml`
+como está en el repo:
+
+```powershell
+git diff config.yaml        # mira qué cambiaste y cópialo a config.local.yaml
+git checkout config.yaml
+git pull
+```
+
+---
+
 ## Palabra clave
 
 Por defecto: **"Apolo"**. Dile la clave y la orden del tirón:

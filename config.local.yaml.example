@@ -1,0 +1,22 @@
+# Copia este fichero a `config.local.yaml` y pon SOLO lo que difiera de
+# config.yaml. Se fusiona encima clave a clave, asi que no hace falta repetir
+# secciones enteras.
+#
+# `config.local.yaml` esta en .gitignore: tus ajustes sobreviven a los git pull.
+
+audio:
+  # Indice de TU microfono. Verlos con: python scripts/diagnose_audio.py --list
+  # input_device: 2
+
+  # Ganancia que necesita TU microfono, calculada por:
+  #     python scripts/diagnose_audio.py
+  gain: 8.0
+
+# Si no tienes GPU funcionando todavia, descomenta para no esperar al fallback:
+# stt:
+#   device: cpu
+#   compute_type: int8
+
+# Palabra clave propia:
+# wake_word:
+#   phrases: [apolo, apollo, a polo]

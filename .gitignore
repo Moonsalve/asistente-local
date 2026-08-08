@@ -20,3 +20,8 @@ models/
 # Cache del token de Spotify, por si alguien cambia la ruta por defecto.
 spotify-token.json
 .cache
+
+# Ajustes propios de cada maquina (indice del microfono, ganancia, rutas de
+# apps). Se fusionan sobre config.yaml. Sin esto, config.yaml chocaria en cada
+# git pull con cambios que en realidad no son compartidos.
+config.local.yaml

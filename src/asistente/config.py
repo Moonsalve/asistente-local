@@ -10,7 +10,7 @@ Los valores por defecto de aqui son los del plan. Los umbrales marcados como
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -205,8 +205,50 @@ class Config(BaseModel):
 
     @classmethod
     def load(cls, path: Path | str) -> Config:
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        """Carga `config.yaml` y le superpone `config.local.yaml` si existe.
+
+        POR QUE HAY DOS FICHEROS
+        ------------------------
+        `config.yaml` esta versionado y trae los valores por defecto del
+        proyecto. Pero varios ajustes son propios de CADA maquina -el indice del
+        microfono, la ganancia que necesita, la ruta de las apps- y editarlos
+        directamente hace que `git pull` choque una y otra vez con conflictos
+        sobre un fichero que en realidad no es compartido.
+
+        `config.local.yaml` esta en .gitignore y se fusiona ENCIMA, clave a
+        clave. Solo hay que escribir en el lo que difiera del valor por defecto:
+
+            audio:
+              gain: 12.0        # solo esta clave; el resto de `audio` se hereda
+
+        Asi los ajustes de tu maquina sobreviven a cualquier actualizacion.
+        """
+        base_path = Path(path)
+        raw = yaml.safe_load(base_path.read_text(encoding="utf-8")) or {}
+
+        local_path = base_path.with_name(f"{base_path.stem}.local{base_path.suffix}")
+        if local_path.is_file():
+            overrides = yaml.safe_load(local_path.read_text(encoding="utf-8")) or {}
+            raw = _deep_merge(raw, overrides)
+
         return cls.model_validate(raw)
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Fusiona recursivamente `override` sobre `base`.
+
+    Recursiva y no plana: con una fusion plana, poner `audio: {gain: 12}` en el
+    fichero local borraria `input_device`, `sample_rate` y `block_size`, y habria
+    que repetir la seccion entera para cambiar un solo valor.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(current, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 class Secrets(BaseSettings):
