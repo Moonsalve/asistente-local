@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+from time import perf_counter
 from typing import Any
 
 from pydantic import ValidationError
@@ -68,6 +69,16 @@ _EXAMPLES: list[dict[str, str]] = [
 ]
 
 
+def _describe(exc: Exception) -> str:
+    """Mensaje corto y accionable para fallos de servicio."""
+    name = type(exc).__name__
+    if "Timeout" in name:
+        return "timeout (Ollama tarda demasiado; puede estar cargando el modelo)"
+    if "Connect" in name:
+        return "no se pudo conectar (¿esta Ollama arrancado? `ollama serve`)"
+    return f"{name}: {exc}".strip().splitlines()[0][:200]
+
+
 def _response_schema(tool_names: list[str]) -> dict[str, Any]:
     return {
         "type": "object",
@@ -101,33 +112,50 @@ class OllamaFallback:
     def warmup(self) -> None:
         """Carga el modelo en VRAM antes del primer comando real.
 
-        Sin esto, la primera peticion tras arrancar tarda varios segundos.
-        Combinado con keep_alive=-1, el modelo ya no se descarga nunca.
+        Usa un timeout MUCHO mas largo que una consulta normal: esta peticion
+        incluye leer varios GB de disco y subirlos a la VRAM, que en frio pasa
+        del minuto. Con el timeout de runtime (10 s) el calentamiento fallaba
+        siempre, y entonces el primer comando real pagaba la carga completa.
         """
+        from ollama import Client
+
+        started = perf_counter()
+        client = Client(host=self._config.host, timeout=self._config.warmup_timeout_s)
         try:
-            self.route("hola")
-        except Exception:
-            log.warning("no se pudo calentar el LLM; el primer comando ira lento", exc_info=True)
+            self._chat(client, "hola")
+        except Exception as exc:
+            log.warning(
+                "no se pudo calentar el LLM (%s); el primer comando ira lento",
+                _describe(exc),
+            )
+            return
+        log.info("LLM calentado en %.1f s", perf_counter() - started)
 
     def route(self, text: str) -> ToolCall | SpeechReply | None:
         try:
-            response = self._client.chat(
-                model=self._config.model,
-                messages=[
-                    {"role": "system", "content": self._system},
-                    *_EXAMPLES,
-                    {"role": "user", "content": text},
-                ],
-                format=self._schema,
-                keep_alive=self._config.keep_alive,
-                options={"temperature": self._config.temperature},
-            )
-            payload = json.loads(response["message"]["content"])
-        except Exception:
-            log.exception("fallo la consulta al LLM")
+            payload = self._chat(self._client, text)
+        except Exception as exc:
+            # Sin traceback: los fallos aqui son de servicio (timeout, Ollama
+            # caido, modelo sin descargar), no bugs. El traceback de httpx
+            # ocupa 40 lineas y no dice nada util.
+            log.warning("fallo la consulta al LLM: %s", _describe(exc))
             return None
 
         return self._to_outcome(payload)
+
+    def _chat(self, client: object, text: str) -> dict[str, Any]:
+        response = client.chat(  # type: ignore[attr-defined]
+            model=self._config.model,
+            messages=[
+                {"role": "system", "content": self._system},
+                *_EXAMPLES,
+                {"role": "user", "content": text},
+            ],
+            format=self._schema,
+            keep_alive=self._config.keep_alive,
+            options={"temperature": self._config.temperature},
+        )
+        return dict(json.loads(response["message"]["content"]))
 
     def _to_outcome(self, payload: dict[str, Any]) -> ToolCall | SpeechReply | None:
         if payload.get("kind") == "speech":

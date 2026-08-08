@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from asistente.config import Config, Secrets
+from asistente.preflight import run_checks
 from asistente.router.catalog import load_catalog
 from asistente.router.embedder import OnnxEmbedder
 from asistente.router.engine import Router
@@ -56,6 +57,13 @@ def main() -> int:
 
     config = Config.load(args.config)
     secrets = Secrets()
+
+    # Antes de cargar nada pesado: Whisper tarda 25 s y el encoder otros 5, asi
+    # que descubrir despues de todo eso que falta la voz de Piper es tiempo
+    # tirado. En modo texto no hay TTS, asi que no aplica.
+    if not args.text and not run_checks(config):
+        log.error("arranque abortado: corrige lo marcado como error y vuelve a intentarlo")
+        return 1
 
     registry, spotify = build_registry(config, secrets)
 

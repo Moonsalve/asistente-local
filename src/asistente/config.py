@@ -100,7 +100,12 @@ class LlmConfig(BaseModel):
     #: valor especial "no lo descargues nunca".
     keep_alive: int | str = -1
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    #: Timeout de una consulta normal. Corto a proposito: si el LLM tarda mas
+    #: que esto, el comando ya se sintio lento y es mejor rendirse.
     timeout_s: float = Field(default=10.0, gt=0.0)
+    #: Timeout del calentamiento. Mucho mas largo porque la primera peticion
+    #: incluye cargar varios GB en VRAM, que con el disco frio pasa de un minuto.
+    warmup_timeout_s: float = Field(default=180.0, gt=0.0)
 
 
 class TtsConfig(BaseModel):
@@ -165,8 +170,8 @@ class Config(BaseModel):
         return self
 
     @classmethod
-    def load(cls, path: Path) -> Config:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    def load(cls, path: Path | str) -> Config:
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         return cls.model_validate(raw)
 
 

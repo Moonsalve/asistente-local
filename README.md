@@ -28,8 +28,13 @@ Windows y está sin ejecutar.
 
 ## Puesta en marcha (PC Windows)
 
+> **Activa el venv en CADA terminal nueva.** Es el fallo número uno: instalas
+> las dependencias en `.venv`, abres otra ventana, y `python -m asistente` corre
+> con el Python del sistema y no las encuentra. El asistente lo detecta al
+> arrancar y te avisa, pero es mejor no tropezar.
+
 ```powershell
-# 1. Entorno
+# 1. Entorno  (el activate no es opcional)
 py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
@@ -38,8 +43,9 @@ pip install -e ".[gpu]"            # CUDA: onnxruntime-gpu + cuBLAS + cuDNN
 # 2. Modelo del LLM
 ollama pull qwen2.5:3b-instruct-q4_K_M
 
-# 3. Voz de Piper: descarga el .onnx y su .json a models/
-#    https://huggingface.co/rhasspy/piper-voices/tree/main/es
+# 3. Voz de Piper (descarga el .onnx y su .json, que van siempre juntos)
+python scripts/download_voice.py
+python scripts/download_voice.py --list    # ver otras voces en español
 
 # 4. Credenciales de Spotify
 copy .env.example .env             # y rellena SPOTIFY_CLIENT_ID
@@ -49,7 +55,11 @@ python -m asistente
 ```
 
 La primera ejecución descarga el encoder de embeddings (~470 MB) y el modelo de
-Whisper. A partir de ahí quedan en caché.
+Whisper (~1.6 GB). A partir de ahí quedan en caché.
+
+Al arrancar se comprueba en un segundo que estén el intérprete correcto, la voz
+de Piper, las librerías CUDA y Ollama con su modelo. Los problemas se reportan
+todos a la vez, antes de cargar nada pesado.
 
 ### Modo texto (para desarrollar)
 
