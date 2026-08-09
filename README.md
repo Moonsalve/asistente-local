@@ -14,15 +14,17 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 | Fase | Qué es | Estado |
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
-| 2 | Router de 3 etapas + skills | **Hecha y verificada** (81 tests) |
-| 4 | Fallback con LLM (Ollama) | Código escrito, sin probar contra Ollama |
-| 1 | Audio: wake word, VAD, STT | Código escrito, **requiere el PC Windows** |
-| 3 | Spotify OAuth + control de sistema | Código escrito, **requiere el PC Windows** |
+| 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
+| 2 | Router de 3 etapas + skills | **Hecha y verificada** (201 tests) |
+| 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
+| 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 5 | Benchmark y tuning | Pendiente |
 
-Lo verificado hasta ahora se ejecutó en macOS, que es donde se puede probar el
-router. Todo lo que toca micrófono, CUDA, `pycaw` o `SendInput` solo funciona en
-Windows y está sin ejecutar.
+Sin verificar todavía en Windows: el autodescubrimiento de aplicaciones, los
+juegos de Steam y Brave como navegador.
+
+El router y las skills se prueban en macOS; todo lo que toca micrófono, CUDA,
+`pycaw` o `SendInput` requiere el PC Windows.
 
 ---
 
