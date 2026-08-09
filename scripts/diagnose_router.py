@@ -30,6 +30,11 @@ POSITIVES = [
     ("échale para atrás", "media.previous"),
     ("párale a la música", "media.play_pause"),
     ("detén eso", "media.play_pause"),
+    # Reanudar: la mitad que estaba sin anclar. "despausa" caía en media.next y
+    # "reanuda la canción" en media.previous, o sea la acción contraria.
+    ("despáusala", "media.play_pause"),
+    ("quítale la pausa", "media.play_pause"),
+    ("deténla", "media.play_pause"),
     ("súbele", "volume.up"),
     ("no se escucha nada", "volume.up"),
     ("bájale tantito", "volume.down"),
@@ -43,6 +48,10 @@ POSITIVES = [
     ("bájale a la música", "volume.down"),
     ("cállale el sonido a spotify", "volume.mute"),
     ("pon spotify al 30", "volume.set"),
+    # Con verbo de direccion gana volume.up/down aunque haya numero; el nivel
+    # tiene que llegar igual y la skill lo prefiere sobre el paso.
+    ("sube el volumen al 50", "volume.up"),
+    ("baja el volumen al 20", "volume.down"),
     ("a qué volumen está la música", "volume.query"),
     ("pon música de los 80", "spotify.play"),
     ("quiero escuchar a shakira", "spotify.play"),

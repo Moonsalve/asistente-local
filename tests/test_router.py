@@ -45,6 +45,13 @@ CORPUS: list[tuple[str, str, dict[str, str] | None]] = [
     ("ponle pausa", "media.play_pause", None),
     ("sigue reproduciendo", "media.play_pause", None),
     ("dale continuar", "media.play_pause", None),
+    # Reanudar estaba mucho menos anclado que pausar: "despausa la canción" caía
+    # en media.next y "reanuda la canción" en media.previous. Las dos son la
+    # acción contraria a la pedida, no un "no entiendo".
+    ("despáusala", "media.play_pause", None),
+    ("quítale la pausa", "media.play_pause", None),
+    ("sigue con lo que estaba sonando", "media.play_pause", None),
+    ("deténla", "media.play_pause", None),
     # --- volumen
     ("súbele", "volume.up", None),
     ("no se escucha nada", "volume.up", None),
@@ -68,6 +75,12 @@ CORPUS: list[tuple[str, str, dict[str, str] | None]] = [
     ("deja el volumen de spotify en 60", "volume.set", {"level": "60", "target": "spotify"}),
     ("pon el volumen de spotify al cuarenta", "volume.set", {"level": "cuarenta"}),
     ("cállale el sonido a spotify", "volume.mute", {"target": "spotify"}),
+    # Nivel explícito con verbo de dirección: el router lo manda a volume.step
+    # porque el verbo pesa más que el número, así que el nivel tiene que llegar
+    # igualmente y la skill lo prefiere sobre el paso.
+    ("sube el volumen al 50", "volume.up", {"delta": 10, "level": "50"}),
+    ("baja el volumen al 20", "volume.down", {"delta": -10, "level": "20"}),
+    ("sube el volumen a 80", "volume.up", {"level": "80"}),
     ("a qué volumen está la música", "volume.query", {"target": "la musica"}),
     ("qué volumen tiene el pc", "volume.query", None),
     # --- spotify.play

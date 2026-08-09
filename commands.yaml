@@ -91,6 +91,33 @@ intents:
       - dale play
       - continua la cancion
       - quita la pausa
+      # LA MITAD "REANUDAR" ESTABA MUY POCO ANCLADA y se caia a los vecinos:
+      # "despausa la cancion" iba a media.next (0.670) y "reanuda la cancion" a
+      # media.previous (0.770), arrastrada por "repite la cancion". Hacen falta
+      # tantas formas de reanudar como de pausar; el verbo "despausar" no lo
+      # relaciona el encoder con "quita la pausa" por si solo.
+      - despausa
+      - despausa la cancion
+      - despausa la musica
+      - despausa spotify
+      - quita la pausa de spotify
+      - reanuda la cancion
+      - reanuda spotify
+      - sigue con la cancion
+      - continua reproduciendo
+      - dale play a spotify
+      # NO anclar aqui formas del tipo "vuelve a poner la cancion que estaba" o
+      # "ponla de nuevo a sonar": en espanol son ambiguas de verdad -pueden
+      # significar reanudar o volver a la anterior- y arrastraron "pon otra vez
+      # la cancion pasada" de media.previous hasta aqui (0.632). Reanudar se
+      # ancla con formas que solo pueden ser reanudar.
+      # Enciticas de pausar. "detenla" caia en media.next (0.376), que no es
+      # "no entiendo" sino la accion contraria: salta de cancion en vez de
+      # pausar. Van pegadas a "pasala"/"quitala" de media.next, asi que al tocar
+      # cualquiera de las dos listas hay que medir la otra.
+      - detenla
+      - parala
+      - paralo
     confirmation: null
 
   spotify.play:
@@ -153,8 +180,21 @@ intents:
       - sube la musica
       - ponle mas volumen a spotify
       - sube el volumen de la cancion
+      # "sube el volumen al 50" ganaba aqui (0.635) en vez de en volume.set: el
+      # verbo pesa mas que el numero. En vez de pelear con el router, este
+      # intent tambien extrae el nivel y la skill lo prefiere sobre el paso, asi
+      # que da igual cual de los dos gane. Ver VolumeStepSkill.execute.
+      - sube el volumen al cincuenta
     slot_patterns:
       - '(?P<target>spotify|espotifai|la musica|el reproductor|la cancion|musica)'
+      # Solo con "a/al/en" delante: sin eso, "sube el volumen 3 rayitas" o
+      # cualquier cifra suelta se interpretaria como destino absoluto.
+      - '\b(?:al?|en)\s+(?P<level>\d{1,3})\b'
+      # El nivel en palabras se ata al vocabulario de numbers.py. Con un
+      # `[a-z\s]+` generico, "sube el volumen en spotify" capturaba
+      # level="spotify": inofensivo porque parse_spanish_number lo rechaza,
+      # pero es correccion por accidente, no por diseno.
+      - '(?:al?|en)\s+(?P<level>(?:cien(?:to)?|noventa|ochenta|setenta|sesenta|cincuenta|cuarenta|treinta|veinti\w+|veinte|dieci\w+|quince|catorce|trece|doce|once|diez|nueve|ocho|siete|seis|cinco|cuatro|tres|dos|un[oa]?|cero)(?:\s+y\s+\w+)?)\b'
     fixed_args:
       delta: 10
     confirmation: null
@@ -180,8 +220,16 @@ intents:
       - baja la musica
       - ponle menos volumen a spotify
       - baja el volumen de la cancion
+      # Mismo motivo que en volume.up: el nivel explicito gana al paso.
+      - baja el volumen al veinte
     slot_patterns:
       - '(?P<target>spotify|espotifai|la musica|el reproductor|la cancion|musica)'
+      - '\b(?:al?|en)\s+(?P<level>\d{1,3})\b'
+      # El nivel en palabras se ata al vocabulario de numbers.py. Con un
+      # `[a-z\s]+` generico, "sube el volumen en spotify" capturaba
+      # level="spotify": inofensivo porque parse_spanish_number lo rechaza,
+      # pero es correccion por accidente, no por diseno.
+      - '(?:al?|en)\s+(?P<level>(?:cien(?:to)?|noventa|ochenta|setenta|sesenta|cincuenta|cuarenta|treinta|veinti\w+|veinte|dieci\w+|quince|catorce|trece|doce|once|diez|nueve|ocho|siete|seis|cinco|cuatro|tres|dos|un[oa]?|cero)(?:\s+y\s+\w+)?)\b'
     fixed_args:
       delta: -10
     confirmation: null

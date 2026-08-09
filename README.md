@@ -98,7 +98,7 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 188 tests, ~2 s
+PYTHONPATH=src pytest -q                           # 201 tests, ~2 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
 PYTHONPATH=src python scripts/diagnose_volume.py   # qué mecanismo de volumen falla
 ```
@@ -241,7 +241,7 @@ en el mezclador de volumen de Windows.
 | Dices | Hace |
 |---|---|
 | *"Apolo, sube el volumen"* / *"súbele"* | volumen del PC, +10% |
-| *"Apolo, pon el volumen al 40"* | volumen del PC, exacto |
+| *"Apolo, pon el volumen al 40"* / *"sube el volumen al 40"* | volumen del PC, exacto |
 | *"Apolo, silencio"* | silencia todo el PC |
 | *"Apolo, sube el volumen de Spotify"* / *"súbele a Spotify"* | solo Spotify |
 | *"Apolo, baja la música"* | solo Spotify |
@@ -269,6 +269,19 @@ python scripts/diagnose_volume.py
 Prueba los cuatro mecanismos por separado (teclas multimedia, volumen maestro,
 mezclador y Web API) y dice cuál falla y por qué. No deja nada cambiado:
 restaura los valores que toca.
+
+Si el diagnóstico sale en verde pero un comando concreto no hace lo esperado, el
+propio asistente lo dice en el log en cada turno:
+
+```
+volumen spotify (paso +10): ok vía mezclador (80 -> 90)
+volumen system (paso -10): ok vía teclas (5/5) (? -> ?)
+volumen spotify (fijar a 40): FALLO vía ninguna (? -> ?)
+```
+
+Con eso se ve de un vistazo **a qué destino fue**, **qué mecanismo actuó** y
+**si el valor se movió de verdad**. Cuando no se mueve porque ya estaba al tope,
+el asistente lo dice en voz alta en vez de quedarse callado.
 
 La búsqueda prueba **playlist → álbum → canción**, en ese orden: *"pon rock"*
 casi siempre significa una playlist, no la primera canción titulada "Rock".
