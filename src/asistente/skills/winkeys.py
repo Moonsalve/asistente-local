@@ -1,14 +1,27 @@
-"""Control de Windows: teclas multimedia y volumen del sistema.
+"""Teclas multimedia de Windows via SendInput.
 
-Las teclas multimedia son la red de seguridad de todo el control de audio: no
-necesitan autenticacion, funcionan con Spotify, YouTube Music o cualquier
-reproductor, y cuestan menos de 5 ms. La Web API de Spotify es mas capaz (puede
-buscar por nombre), pero falla cuando no hay dispositivo activo; en ese caso se
-cae aqui.
+Son la red de seguridad del control de audio: no necesitan autenticacion,
+funcionan con Spotify, YouTube Music o cualquier reproductor, y cuestan menos de
+5 ms. La Web API de Spotify es mas capaz (puede buscar por nombre), pero falla
+cuando no hay dispositivo activo; en ese caso se cae aqui.
 
-Se usa `ctypes.SendInput` en lugar de `keybd_event` porque este ultimo esta
-deprecado desde Windows Vista y no funciona con aplicaciones que leen la cola de
-entrada moderna.
+El volumen NO se toca desde aqui: vive en `winaudio.py`, que usa la API de audio
+de Windows y puede fijar un porcentaje exacto en vez de moverse a saltos de 2%.
+Este modulo solo manda pulsaciones.
+
+Se usa `SendInput` en lugar de `keybd_event` porque este ultimo esta deprecado
+desde Windows Vista y no funciona con aplicaciones que leen la cola de entrada
+moderna.
+
+EL TAMANO DE `INPUT` NO ES NEGOCIABLE
+-------------------------------------
+`SendInput` valida que `cbSize` sea exactamente `sizeof(INPUT)` y devuelve 0 con
+`ERROR_INVALID_PARAMETER` si no cuadra. En x64 son **40 bytes**, y esa cifra sale
+de la union completa: el miembro mas grande es `MOUSEINPUT` (32 bytes), no
+`KEYBDINPUT` (24). Declarar la union solo con `ki` -que es lo unico que este
+modulo usa- da 32 bytes y hace que *todas* las pulsaciones fallen en silencio.
+Por eso estan los tres miembros aunque solo se rellene uno. `tests/test_winkeys.py`
+fija el tamano para que no vuelva a pasar.
 
 Todo este modulo es no-operativo fuera de Windows: importar en macOS/Linux es
 seguro (para poder correr los tests del router), pero cada llamada devuelve
@@ -20,12 +33,16 @@ from __future__ import annotations
 import ctypes
 import logging
 import sys
-from ctypes import wintypes
 from enum import IntEnum
 
 log = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
+
+#: Lo que `SendInput` espera en `cbSize`. Se calcula igual en todas las
+#: plataformas para poder comprobarlo desde los tests en la Mac.
+_POINTER_SIZE = ctypes.sizeof(ctypes.c_void_p)
+EXPECTED_INPUT_SIZE = 40 if _POINTER_SIZE == 8 else 28
 
 
 class VirtualKey(IntEnum):
@@ -40,35 +57,86 @@ class VirtualKey(IntEnum):
     MEDIA_PLAY_PAUSE = 0xB3
 
 
+_INPUT_KEYBOARD = 1
+_KEYEVENTF_KEYUP = 0x0002
+
+# Tipos equivalentes a los de `wintypes`, definidos a mano porque
+# `ctypes.wintypes` solo se puede importar en Windows y estas estructuras tienen
+# que ser inspeccionables desde los tests de la Mac.
+_WORD = ctypes.c_uint16
+_DWORD = ctypes.c_uint32
+_LONG = ctypes.c_int32
+_ULONG_PTR = ctypes.c_uint64 if _POINTER_SIZE == 8 else ctypes.c_uint32
+
+
+class _MouseInput(ctypes.Structure):
+    """No se usa, pero es el miembro mas grande de la union y por tanto el que
+    fija el tamano de `INPUT`. Quitarlo rompe SendInput entero."""
+
+    _fields_ = (
+        ("dx", _LONG),
+        ("dy", _LONG),
+        ("mouseData", _DWORD),
+        ("dwFlags", _DWORD),
+        ("time", _DWORD),
+        ("dwExtraInfo", _ULONG_PTR),
+    )
+
+
+class _KeyBdInput(ctypes.Structure):
+    _fields_ = (
+        ("wVk", _WORD),
+        ("wScan", _WORD),
+        ("dwFlags", _DWORD),
+        ("time", _DWORD),
+        ("dwExtraInfo", _ULONG_PTR),
+    )
+
+
+class _HardwareInput(ctypes.Structure):
+    _fields_ = (("uMsg", _DWORD), ("wParamL", _WORD), ("wParamH", _WORD))
+
+
+class _InputUnion(ctypes.Union):
+    _fields_ = (("mi", _MouseInput), ("ki", _KeyBdInput), ("hi", _HardwareInput))
+
+
+class _Input(ctypes.Structure):
+    _fields_ = (("type", _DWORD), ("union", _InputUnion))
+
+
+def input_struct_size() -> int:
+    """Tamano real de `INPUT`. Lo consulta `scripts/diagnose_volume.py` para
+    poder decir 'las teclas no funcionan y este es el motivo' sin adivinar."""
+    return ctypes.sizeof(_Input)
+
+
 if IS_WINDOWS:  # pragma: no cover - solo se ejecuta en el PC destino
-    _INPUT_KEYBOARD = 1
-    _KEYEVENTF_KEYUP = 0x0002
-
-    class _KeyBdInput(ctypes.Structure):
-        _fields_ = (
-            ("wVk", wintypes.WORD),
-            ("wScan", wintypes.WORD),
-            ("dwFlags", wintypes.DWORD),
-            ("time", wintypes.DWORD),
-            ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),
-        )
-
-    class _InputUnion(ctypes.Union):
-        _fields_ = (("ki", _KeyBdInput),)
-
-    class _Input(ctypes.Structure):
-        _fields_ = (("type", wintypes.DWORD), ("union", _InputUnion))
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _user32.SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int)
+    _user32.SendInput.restype = ctypes.c_uint
 
     def _send_key(vk: VirtualKey) -> bool:
         events = (_Input * 2)(
-            _Input(_INPUT_KEYBOARD, _InputUnion(ki=_KeyBdInput(wVk=vk, dwFlags=0))),
+            _Input(type=_INPUT_KEYBOARD, union=_InputUnion(ki=_KeyBdInput(wVk=vk, dwFlags=0))),
             _Input(
-                _INPUT_KEYBOARD,
-                _InputUnion(ki=_KeyBdInput(wVk=vk, dwFlags=_KEYEVENTF_KEYUP)),
+                type=_INPUT_KEYBOARD,
+                union=_InputUnion(ki=_KeyBdInput(wVk=vk, dwFlags=_KEYEVENTF_KEYUP)),
             ),
         )
-        sent = ctypes.windll.user32.SendInput(2, ctypes.byref(events), ctypes.sizeof(_Input))
-        return sent == 2
+        sent = _user32.SendInput(2, events, ctypes.sizeof(_Input))
+        if sent != 2:
+            # Los dos motivos reales: cbSize incorrecto (error 87), o UIPI
+            # bloqueando la inyeccion porque la ventana en primer plano corre
+            # elevada y el asistente no (error 5).
+            log.warning(
+                "SendInput(%s) inyecto %d de 2 eventos (error %d)",
+                vk.name,
+                sent,
+                ctypes.get_last_error(),
+            )
+            return False
+        return True
 
 else:
 
@@ -80,46 +148,3 @@ else:
 def press(vk: VirtualKey) -> bool:
     """Envia una pulsacion completa (down + up). False si no hizo efecto."""
     return _send_key(vk)
-
-
-def get_volume_percent() -> int | None:
-    """Volumen maestro actual en 0-100, o None si no se puede leer.
-
-    Usa la escala *escalar* de la API de Windows, no la de decibelios: la
-    escalar es la que corresponde a lo que muestra el control de volumen.
-    """
-    endpoint = _audio_endpoint()
-    if endpoint is None:
-        return None
-    return round(endpoint.GetMasterVolumeLevelScalar() * 100)
-
-
-def set_volume_percent(level: int) -> bool:
-    """Fija el volumen maestro. `level` se recorta a 0-100."""
-    endpoint = _audio_endpoint()
-    if endpoint is None:
-        return False
-    endpoint.SetMasterVolumeLevelScalar(max(0, min(100, level)) / 100.0, None)
-    return True
-
-
-def _audio_endpoint():  # noqa: ANN202 - tipo COM opaco
-    """Interfaz IAudioEndpointVolume, o None fuera de Windows.
-
-    El import es perezoso porque `pycaw` arrastra `comtypes`, que solo existe en
-    Windows, y este modulo tiene que poder importarse en la Mac de desarrollo.
-    """
-    if not IS_WINDOWS:
-        return None
-    try:  # pragma: no cover - solo en el PC destino
-        from comtypes import CLSCTX_ALL
-        from ctypes import POINTER, cast
-
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-
-        speakers = AudioUtilities.GetSpeakers()
-        interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        return cast(interface, POINTER(IAudioEndpointVolume))
-    except Exception:
-        log.exception("no se pudo abrir el endpoint de audio")
-        return None

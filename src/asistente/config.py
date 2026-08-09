@@ -217,6 +217,11 @@ class SpotifyConfig(BaseModel):
     #: Si la API falla o no hay dispositivo activo, se recurre a las teclas
     #: multimedia de Windows. Menos capaz pero nunca deja el comando sin efecto.
     fallback_to_media_keys: bool = True
+    #: Procesos que se buscan en el mezclador de volumen de Windows para
+    #: controlar el volumen de Spotify sin pasar por la Web API. Es una tupla
+    #: porque Spotify abre varios procesos y no siempre es el mismo el que
+    #: tiene el audio abierto.
+    process_names: tuple[str, ...] = ("Spotify.exe",)
 
 
 class Config(BaseModel):

@@ -98,8 +98,9 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                      # 81 tests, ~2 s
+PYTHONPATH=src pytest -q                           # 188 tests, ~2 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
+PYTHONPATH=src python scripts/diagnose_volume.py   # qué mecanismo de volumen falla
 ```
 
 `tests/test_router.py` mide el router contra frases que **no** están en
@@ -230,7 +231,44 @@ Con Spotify abierto (hace falta un dispositivo activo):
 | *"Apolo, qué canción es esta"* / *"quién canta esto"* | lo dice en voz alta |
 | *"Apolo, me gusta esta canción"* / *"guárdala"* | la añade a tus favoritos |
 | *"Apolo, pon el modo aleatorio"* | activa shuffle |
-| *"Apolo, sube el volumen"* | volumen del sistema |
+
+### Volumen: el del PC y el de Spotify son dos mandos distintos
+
+Sin mencionar destino se controla **Windows**. Diciendo *"de Spotify"*, *"la
+música"* o *"la canción"* se controla **solo Spotify**, que es la barra que sale
+en el mezclador de volumen de Windows.
+
+| Dices | Hace |
+|---|---|
+| *"Apolo, sube el volumen"* / *"súbele"* | volumen del PC, +10% |
+| *"Apolo, pon el volumen al 40"* | volumen del PC, exacto |
+| *"Apolo, silencio"* | silencia todo el PC |
+| *"Apolo, sube el volumen de Spotify"* / *"súbele a Spotify"* | solo Spotify |
+| *"Apolo, baja la música"* | solo Spotify |
+| *"Apolo, pon Spotify al 30"* | volumen de Spotify, exacto |
+| *"Apolo, silencia Spotify"* | mutea solo Spotify |
+| *"Apolo, a qué volumen está la música"* | lo dice en voz alta |
+
+El volumen por aplicación es **multiplicativo** sobre el maestro: con Windows al
+50% y Spotify al 100%, Spotify suena al 50% real. Es el mismo comportamiento que
+si movieras las barras a mano.
+
+Spotify se controla primero por el **mezclador de Windows** (instantáneo, no
+necesita autenticación) y solo se recurre a la **Web API** si Spotify no tiene
+audio abierto en este PC — por ejemplo cuando la música suena en el móvil o en
+un altavoz por Spotify Connect. Algunos dispositivos de Connect y el reproductor
+web rechazan el cambio de volumen con un 403; eso es de Spotify, no del
+asistente.
+
+Si algo de esto no responde:
+
+```powershell
+python scripts/diagnose_volume.py
+```
+
+Prueba los cuatro mecanismos por separado (teclas multimedia, volumen maestro,
+mezclador y Web API) y dice cuál falla y por qué. No deja nada cambiado:
+restaura los valores que toca.
 
 La búsqueda prueba **playlist → álbum → canción**, en ese orden: *"pon rock"*
 casi siempre significa una playlist, no la primera canción titulada "Rock".
@@ -427,6 +465,27 @@ da HTTP 400. Correcto:
 llm:
   keep_alive: -1     # sin comillas
 ```
+
+### El silencio y las teclas multimedia no hacían nada (corregido)
+
+Síntoma: *"Apolo, silencio"* respondía *"no pude silenciar el sonido"*, y las
+teclas de reproducción no llegaban nunca a Spotify. Sin excepción y sin log.
+
+Causa: `SendInput` valida que `cbSize` sea **exactamente** `sizeof(INPUT)` y
+devuelve 0 si no cuadra. La unión `INPUT` estaba declarada solo con
+`KEYBDINPUT` —lo único que el asistente usa— y eso da 32 bytes; Windows espera
+40 en x64, porque el miembro que fija el tamaño es `MOUSEINPUT`. La llamada se
+rechazaba entera y el único indicio era un valor de retorno que nadie miraba.
+
+Se notaba poco porque los comandos de reproducción intentan la Web API de
+Spotify primero y las teclas son solo el respaldo; el silencio, en cambio, no
+tenía otra vía. Ahora `winkeys.py` declara la unión completa, registra
+`GetLastError()` cuando falla, y `tests/test_winkeys.py` fija el tamaño. El
+silencio además pasa por la API de audio y solo usa la tecla como respaldo.
+
+Si `scripts/diagnose_volume.py` dice que las pulsaciones se rechazan pese al
+tamaño correcto, la causa suele ser **UIPI**: la ventana en primer plano corre
+como administrador y el asistente no, así que Windows bloquea la inyección.
 
 ### `UserWarning: cache-system uses symlinks... your machine does not support them`
 

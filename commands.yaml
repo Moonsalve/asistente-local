@@ -118,8 +118,23 @@ intents:
     confirmation: null
 
   # -------------------------------------------------------------------- volumen
+  #
+  # NOTA DE DISENO: el volumen del PC y el de Spotify NO son intents distintos.
+  # "sube el volumen" y "sube el volumen de spotify" comparten casi todas las
+  # palabras y el coseno centrado no las separa de forma fiable -es el mismo
+  # caso que app.open contra web.open-. Asi que hay un intent por DIRECCION y el
+  # destino viaja en el slot `target`, que se extrae despues de decidir el
+  # intent y por tanto no desambigua nada.
+  #
+  # Sin destino en la frase manda `fixed_args` y se controla el PC, que es lo
+  # que uno espera al decir "sube el volumen" a secas.
+  #
+  # El patron del destino se repite en los cuatro intents a proposito: es el
+  # precio de que `slot_patterns` sea por intent, y es preferible a un alias de
+  # YAML que oculte que cada intent decide sus propios slots.
+
   volume.up:
-    tool: system.volume_step
+    tool: volume.step
     literal:
       - sube el volumen
       - mas volumen
@@ -131,12 +146,21 @@ intents:
       - no te escucho bien
       - esta muy bajo
       - aumenta el volumen
+      # Variantes con destino. Van en ESTE intent y no en uno propio; ver la
+      # nota de diseno de arriba.
+      - sube el volumen de spotify
+      - sube el volumen de la musica
+      - sube la musica
+      - ponle mas volumen a spotify
+      - sube el volumen de la cancion
+    slot_patterns:
+      - '(?P<target>spotify|espotifai|la musica|el reproductor|la cancion|musica)'
     fixed_args:
       delta: 10
     confirmation: null
 
   volume.down:
-    tool: system.volume_step
+    tool: volume.step
     literal:
       - baja el volumen
       - menos volumen
@@ -148,28 +172,53 @@ intents:
       - esta muy alto
       - bajale
       - reduce el volumen
+      - baja el volumen de spotify
+      - baja el volumen de la musica
+      # OJO: "baja la musica" esta a un paso de "para la musica"
+      # (media.play_pause). Ambos lados necesitan anclas; si tocas uno, mide el
+      # otro con scripts/diagnose_router.py.
+      - baja la musica
+      - ponle menos volumen a spotify
+      - baja el volumen de la cancion
+    slot_patterns:
+      - '(?P<target>spotify|espotifai|la musica|el reproductor|la cancion|musica)'
     fixed_args:
       delta: -10
     confirmation: null
 
   volume.set:
-    tool: system.volume_set
+    tool: volume.set
     examples:
       - pon el volumen al cincuenta por ciento
       - volumen al veinte
       - deja el volumen en treinta
       - ajusta el volumen a setenta
+      - pon el volumen de spotify al cincuenta
+      - pon la musica al treinta por ciento
+      - deja spotify en cuarenta
+      # "pon spotify al treinta" ganaba a volume.up por solo 0.03; sin una forma
+      # anclada que omita la palabra "volumen" el margen es demasiado fino.
+      - pon spotify al setenta
+      - deja la musica en veinte
     slot_patterns:
       # Whisper a veces devuelve digitos ("volumen al 50") y a veces palabras
       # ("volumen al cincuenta"). Se captura crudo y la skill lo convierte:
       # el router extrae, la skill valida y coacciona.
       - '(?P<level>\d{1,3})'
-      - '^(?:pon|ponme|deja|ajusta|sube|baja|cambia)?\s*(?:me\s+)?(?:el\s+)?volumen\s+(?:al?|en)\s+(?P<level>.+?)(?:\s+por\s+ciento)?\s*$'
+      # El `(?:de ...)?` intermedio existe para que "volumen de spotify al
+      # cincuenta" siga entregando el nivel: sin el, la parte anclada se rompe
+      # y solo se extraeria el destino, dejando la skill sin `level`.
+      - '^(?:pon|ponme|deja|dejame|ajusta|sube|baja|cambia)?\s*(?:me\s+)?(?:el\s+)?volumen\s+(?:de\s+(?:la\s+|el\s+)?\w+\s+)?(?:al?|en)\s+(?P<level>.+?)(?:\s+por\s+ciento)?\s*$'
+      # "pon spotify al treinta": aqui la palabra "volumen" ni aparece.
+      - '^(?:pon|ponme|deja|dejame|ajusta|baja|sube|cambia)\s+(?:la\s+|el\s+)?(?:spotify|musica|cancion|reproductor)\s+(?:al?|en)\s+(?P<level>.+?)(?:\s+por\s+ciento)?\s*$'
+      # Destino: patron aparte porque es independiente del nivel. `extract_slots`
+      # acumula por clave, asi que este anade `target` sin pisar `level`.
+      - '(?P<target>spotify|espotifai|la musica|el reproductor|la cancion|musica)'
     slots_required: true
     confirmation: null
 
   volume.mute:
-    tool: system.mute
+    tool: volume.mute
     literal:
       - silencio
       - silencia
@@ -182,6 +231,26 @@ intents:
       # "sin sonido" se iba a volume.down (0.932 vs 0.921) sin este ejemplo.
       - sin sonido
       - quita el audio del todo
+      # OJO: "silencia spotify" choca con "silencia la cancion un momento"
+      # (media.play_pause), que significa PAUSAR, no mutear. Los dos estan
+      # anclados; medir ambos al tocar cualquiera.
+      - silencia spotify
+      - mutea spotify
+      - quita el sonido de spotify
+    slot_patterns:
+      - '(?P<target>spotify|espotifai|la musica|el reproductor|la cancion|musica)'
+    confirmation: null
+
+  volume.query:
+    tool: volume.query
+    examples:
+      - a que volumen esta
+      - que volumen tengo
+      - cual es el volumen actual
+      - a que volumen esta spotify
+      - que volumen tiene la musica
+    slot_patterns:
+      - '(?P<target>spotify|espotifai|la musica|el reproductor|la cancion|musica)'
     confirmation: null
 
   # --------------------------------------------------- abrir (apps y webs juntas)
@@ -222,6 +291,13 @@ intents:
       - mata el proceso de chrome
       - termina la calculadora
       - quiero cerrar steam
+      # OJO: al anadir "silencia spotify" a volume.mute, "termina el spotify" se
+      # fue alli con 0.532 frente a 0.357 de aqui. Cerrar una aplicacion y
+      # silenciarla son cosas MUY distintas, asi que este lado necesita sus
+      # propias formas del verbo terminar.
+      - termina spotify
+      - mata spotify
+      - cierra la aplicacion de spotify
     slot_patterns:
       - '^(?:cierra|cerrar|cierrame|mata|matar|termina|terminar|finaliza)\s+(?:me\s+)?(?:el|la|los|las)?\s*(?:proceso\s+de\s+|aplicacion\s+|app\s+|programa\s+)?(?P<app>.+?)\s*$'
       - '^(?:quiero\s+)?cerrar\s+(?:el|la)?\s*(?P<app>.+?)\s*$'

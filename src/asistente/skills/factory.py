@@ -21,10 +21,11 @@ from asistente.skills.spotify import (
     SpotifyPlaySkill,
     WhatSongSkill,
 )
-from asistente.skills.system import (
-    DateSkill,
+from asistente.skills.system import DateSkill, TimeSkill
+from asistente.skills.volume import (
     MuteSkill,
-    TimeSkill,
+    VolumeController,
+    VolumeQuerySkill,
     VolumeSetSkill,
     VolumeStepSkill,
 )
@@ -37,6 +38,7 @@ def build_registry(config: Config, secrets: Secrets) -> tuple[SkillRegistry, Spo
     spotify = SpotifyClient(config, secrets)
     browser = Browser.from_path(config.web.browser, config.web.browser_path)
     use_keys = config.spotify.fallback_to_media_keys
+    volume = VolumeController(spotify, config.spotify.process_names)
 
     skills: list[Skill] = [
         NextTrackSkill(spotify, use_keys),
@@ -46,9 +48,10 @@ def build_registry(config: Config, secrets: Secrets) -> tuple[SkillRegistry, Spo
         WhatSongSkill(spotify),
         LikeSkill(spotify),
         ShuffleSkill(spotify),
-        VolumeStepSkill(),
-        VolumeSetSkill(),
-        MuteSkill(),
+        VolumeStepSkill(volume),
+        VolumeSetSkill(volume),
+        MuteSkill(volume),
+        VolumeQuerySkill(volume),
         TimeSkill(),
         DateSkill(),
         OpenTargetSkill(config, browser),

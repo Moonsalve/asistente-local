@@ -36,11 +36,20 @@ POSITIVES = [
     ("quita el audio", "volume.mute"),
     ("sin sonido", "volume.mute"),
     ("volumen al 40", "volume.set"),
+    # Volumen con destino: mismo intent, slot distinto. La pareja
+    # "silencia spotify" / "termina el spotify" es la que mas cerca ha estado de
+    # cruzarse (0.532 contra 0.357 antes de anclar app.close).
+    ("súbele a spotify", "volume.up"),
+    ("bájale a la música", "volume.down"),
+    ("cállale el sonido a spotify", "volume.mute"),
+    ("pon spotify al 30", "volume.set"),
+    ("a qué volumen está la música", "volume.query"),
     ("pon música de los 80", "spotify.play"),
     ("quiero escuchar a shakira", "spotify.play"),
     ("ábreme el chrome", "open.target"),
     ("corre la calculadora", "open.target"),
     ("mata el discord", "app.close"),
+    ("termina el spotify", "app.close"),
     ("entra a youtube", "open.target"),
     ("llévame a netflix", "open.target"),
     ("búscame el precio del dólar", "web.search"),

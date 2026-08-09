@@ -44,20 +44,33 @@ def test_unknown_tool_is_rejected(registry: SkillRegistry) -> None:
 
 
 def test_extra_args_are_rejected(registry: SkillRegistry) -> None:
-    """`extra='forbid)` en cada modelo: el LLM no puede colar parametros."""
-    result = registry.dispatch(
-        ToolCall(name="system.mute", args={"target": "/etc/passwd"})
-    )
+    """`extra='forbid'` en cada modelo: el LLM no puede colar parametros.
+
+    OJO al elegir la clave: `target` SI es un campo valido de volume.mute desde
+    que el volumen distingue PC de Spotify. Este test necesita un nombre que de
+    verdad no exista, o dejaria de comprobar nada.
+    """
+    result = registry.dispatch(ToolCall(name="volume.mute", args={"ruta": "/etc/passwd"}))
     assert result.ok is False
 
 
+def test_free_text_target_never_escapes_the_enum(registry: SkillRegistry) -> None:
+    """`target` es texto libre que puede venir del LLM, asi que la skill lo
+    coacciona: cualquier cosa que no suene a musica cae en el sistema. Nunca se
+    usa como ruta, comando ni nombre de proceso."""
+    from asistente.skills.volume import VolumeTarget, resolve_target
+
+    for hostile in ("/etc/passwd", "; rm -rf /", "../../windows", "", "lo que sea"):
+        assert resolve_target(hostile) is VolumeTarget.SYSTEM
+
+
 def test_wrong_arg_type_is_rejected(registry: SkillRegistry) -> None:
-    result = registry.dispatch(ToolCall(name="system.volume_step", args={"delta": "muchisimo"}))
+    result = registry.dispatch(ToolCall(name="volume.step", args={"delta": "muchisimo"}))
     assert result.ok is False
 
 
 def test_out_of_range_arg_is_rejected(registry: SkillRegistry) -> None:
-    result = registry.dispatch(ToolCall(name="system.volume_step", args={"delta": 9999}))
+    result = registry.dispatch(ToolCall(name="volume.step", args={"delta": 9999}))
     assert result.ok is False
 
 

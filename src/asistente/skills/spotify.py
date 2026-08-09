@@ -174,6 +174,40 @@ class SpotifyClient:
             return None
         return str(item.get("name", ""))
 
+    def get_volume_percent(self) -> int | None:
+        """Volumen del dispositivo activo segun Spotify, o None.
+
+        Es el volumen *del reproductor*, no el del mezclador de Windows: son dos
+        mandos distintos y este es el unico que existe cuando la musica suena en
+        el movil o en un altavoz.
+        """
+        if self._client is None:
+            return None
+        try:
+            state = self._client.current_playback()
+        except Exception:
+            log.exception("no se pudo leer el volumen de Spotify")
+            return None
+        device = (state or {}).get("device") or {}
+        volume = device.get("volume_percent")
+        return int(volume) if volume is not None else None
+
+    def set_volume_percent(self, level: int) -> bool:
+        """Fija el volumen del dispositivo activo. `level` se recorta a 0-100.
+
+        Spotify devuelve 403 en dispositivos que no admiten control de volumen
+        (bastantes altavoces de Connect, y el reproductor web). Se traga la
+        excepcion y devuelve False: quien llama decide si degradar.
+        """
+        if self._client is None or (device := self._active_device()) is None:
+            return False
+        try:
+            self._client.volume(max(0, min(100, level)), device_id=device)
+        except Exception:
+            log.exception("no se pudo fijar el volumen de Spotify")
+            return False
+        return True
+
     def set_shuffle(self, enabled: bool) -> bool:
         if self._client is None or (device := self._active_device()) is None:
             return False

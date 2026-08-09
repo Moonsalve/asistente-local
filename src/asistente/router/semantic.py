@@ -111,15 +111,23 @@ def extract_slots(catalog: Catalog, intent: str, normalized: str) -> dict[str, s
     Clave del diseno: estos regex NO desambiguan intents, solo extraen. Por eso
     "pon" puede aparecer en `spotify.play` y en `app.open` sin conflicto: cuando
     llegan aqui, la decision ya esta tomada.
+
+    Se recorren TODOS los patrones acumulando, y para cada clave manda el primero
+    que la rellena. Asi un intent puede repartir sus argumentos en patrones
+    independientes -"volumen al 40 de spotify" necesita un regex para el nivel y
+    otro para el destino- sin que eso cambie nada donde varios patrones son
+    alternativas del mismo argumento: ahi el primero sigue ganando, igual que
+    cuando esto devolvia al primer acierto.
     """
     patterns = catalog.slot_regexes[intent]
     if not patterns:
         return {}
 
+    slots: dict[str, str] = {}
     for pattern in patterns:
         if (m := pattern.search(normalized)) is None:
             continue
-        slots = {k: v.strip() for k, v in m.groupdict().items() if v and v.strip()}
-        if slots:
-            return slots
-    return None
+        for key, value in m.groupdict().items():
+            if key not in slots and value and value.strip():
+                slots[key] = value.strip()
+    return slots or None

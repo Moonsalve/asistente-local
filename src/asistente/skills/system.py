@@ -1,86 +1,16 @@
-"""Skills de sistema: volumen y hora.
+"""Skills de sistema: hora y fecha.
 
-El volumen usa la API de Windows (pycaw) cuando esta disponible porque permite
-fijar un porcentaje exacto. Si falla, se recurre a las teclas multimedia, que
-solo suben o bajan en pasos fijos pero nunca dejan el comando sin efecto.
+El volumen vivia aqui hasta que dejo de ser solo "del sistema": ahora tambien
+apunta a Spotify y tiene su propio modulo, `skills/volume.py`.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 
-from asistente.numbers import parse_spanish_number
 from asistente.skills.base import NoArgs, Skill, SkillResult
-from asistente.skills.winkeys import VirtualKey, get_volume_percent, press, set_volume_percent
-
-#: Cada pulsacion de VOLUME_UP/DOWN mueve el volumen de Windows un 2%.
-_KEY_STEP_PERCENT = 2
-
-
-class VolumeStepArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    #: Positivo sube, negativo baja. Viene de `fixed_args` en el catalogo.
-    delta: int = Field(ge=-100, le=100)
-
-
-class VolumeStepSkill(Skill):
-    name = "system.volume_step"
-    args_model = VolumeStepArgs
-    description = "Sube o baja el volumen del sistema una cantidad relativa."
-
-    def execute(self, args: BaseModel) -> SkillResult:
-        assert isinstance(args, VolumeStepArgs)
-
-        current = get_volume_percent()
-        if current is not None and set_volume_percent(current + args.delta):
-            return SkillResult.silent()
-
-        # Sin pycaw: aproximar con pulsaciones. Se redondea al alza para que
-        # "sube el volumen" siempre haga algo perceptible.
-        key = VirtualKey.VOLUME_UP if args.delta > 0 else VirtualKey.VOLUME_DOWN
-        presses = max(1, round(abs(args.delta) / _KEY_STEP_PERCENT))
-        if not all(press(key) for _ in range(presses)):
-            return SkillResult.failed("No pude cambiar el volumen.")
-        return SkillResult.silent()
-
-
-class VolumeSetArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    #: Llega como texto porque el router extrae la frase cruda: puede ser "40"
-    #: o "cuarenta" segun como lo transcriba Whisper. La conversion es
-    #: responsabilidad de la skill, no del router.
-    level: str = Field(min_length=1, max_length=40)
-
-
-class VolumeSetSkill(Skill):
-    name = "system.volume_set"
-    args_model = VolumeSetArgs
-    description = "Fija el volumen del sistema a un porcentaje concreto (0-100)."
-
-    def execute(self, args: BaseModel) -> SkillResult:
-        assert isinstance(args, VolumeSetArgs)
-
-        level = parse_spanish_number(args.level)
-        if level is None:
-            return SkillResult.failed("No entendí a qué volumen lo pongo.")
-        if not set_volume_percent(level):
-            return SkillResult.failed("No pude cambiar el volumen.")
-        return SkillResult.silent()
-
-
-class MuteSkill(Skill):
-    name = "system.mute"
-    args_model = NoArgs
-    description = "Silencia o quita el silencio del sistema."
-
-    def execute(self, args: BaseModel) -> SkillResult:
-        if not press(VirtualKey.VOLUME_MUTE):
-            return SkillResult.failed("No pude silenciar el sonido.")
-        return SkillResult.silent()
 
 
 class TimeSkill(Skill):

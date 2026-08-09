@@ -56,6 +56,20 @@ CORPUS: list[tuple[str, str, dict[str, str] | None]] = [
     ("sin sonido", "volume.mute", None),
     ("volumen al 40", "volume.set", {"level": "40"}),
     ("pon el volumen en 75", "volume.set", {"level": "75"}),
+    # --- volumen con destino: mismo intent, distinto slot `target`.
+    # Ninguna de estas frases esta en commands.yaml; miden generalizacion, no
+    # memoria. La ausencia de `target` es tan importante como su presencia: si
+    # el regex del destino empezara a disparar con frases del PC, "sube el
+    # volumen" acabaria moviendo Spotify.
+    ("súbele a spotify", "volume.up", {"delta": 10, "target": "spotify"}),
+    ("bájale a la música", "volume.down", {"delta": -10, "target": "la musica"}),
+    ("ponle más volumen a la música", "volume.up", {"target": "la musica"}),
+    ("pon spotify al 30", "volume.set", {"level": "30", "target": "spotify"}),
+    ("deja el volumen de spotify en 60", "volume.set", {"level": "60", "target": "spotify"}),
+    ("pon el volumen de spotify al cuarenta", "volume.set", {"level": "cuarenta"}),
+    ("cállale el sonido a spotify", "volume.mute", {"target": "spotify"}),
+    ("a qué volumen está la música", "volume.query", {"target": "la musica"}),
+    ("qué volumen tiene el pc", "volume.query", None),
     # --- spotify.play
     ("reproduce la playlist de estudio", "spotify.play", {"query": "estudio"}),
     ("pon música de los 80", "spotify.play", {"query": "los 80"}),
@@ -129,6 +143,41 @@ def test_fixed_args_are_applied(router: Router) -> None:
     down = router.route("bájale al volumen")
     assert up.tool_call is not None and up.tool_call.args["delta"] == 10
     assert down.tool_call is not None and down.tool_call.args["delta"] == -10
+
+
+def test_slots_accumulate_across_patterns(router: Router) -> None:
+    """`level` y `target` salen de regex distintos del mismo intent.
+
+    `extract_slots` devolvia al primer patron que casara, asi que el segundo
+    argumento no llegaba nunca. Ahora recorre todos acumulando.
+    """
+    result = router.route("pon el volumen de spotify al 45")
+    assert result.tool_call is not None
+    assert result.tool_call.args["level"] == "45"
+    assert result.tool_call.args["target"] == "spotify"
+
+
+def test_first_pattern_still_wins_for_a_repeated_slot(router: Router) -> None:
+    """La otra mitad del contrato: cuando dos patrones capturan la MISMA clave
+    son alternativas, no complementos, y manda el que esta antes en el YAML."""
+    result = router.route("reproduce la playlist de estudio")
+    assert result.tool_call is not None
+    assert result.tool_call.args["query"] == "estudio"
+
+
+def test_plain_volume_commands_carry_no_target(router: Router) -> None:
+    """Sin destino en la frase, el volumen es el del PC.
+
+    Se comprueba la AUSENCIA del slot porque es la mitad peligrosa: si el regex
+    del destino disparara de mas, cada "sube el volumen" movería Spotify en vez
+    de Windows y el fallo seria difuso, no un error visible.
+    """
+    for phrase in ("súbele", "no se escucha nada", "pon el volumen en 75", "sin sonido"):
+        result = router.route(phrase)
+        assert result.tool_call is not None
+        assert "target" not in result.tool_call.args, (
+            f"{phrase!r} extrajo target={result.tool_call.args['target']!r} sin haberlo dicho"
+        )
 
 
 def test_unknown_phrase_escalates_to_llm(router: Router) -> None:

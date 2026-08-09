@@ -114,6 +114,35 @@ allowlist de apps  →  mapa de sitios  →  búsqueda web
 
 El último escalón garantiza que el comando nunca se queda sin efecto.
 
+### El volumen del PC y el de Spotify: un slot, no dos intents
+
+Mismo razonamiento que `open.target`, aplicado a un caso más agudo. *"Sube el
+volumen"* y *"sube el volumen de Spotify"* comparten casi todas las palabras;
+partirlas en dos intents las haría indistinguibles por coseno. Hay **un intent
+por dirección** (subir, bajar, fijar, silenciar, consultar) y el destino viaja
+como slot `target`, que por defecto vale `system`.
+
+La resolución vuelve a decidirse con datos, no con similitud:
+
+```
+Spotify:  mezclador de Windows (ISimpleAudioVolume)  →  Web API de Spotify
+PC:       IAudioEndpointVolume                       →  teclas multimedia
+```
+
+El mezclador va primero porque es local, instantáneo y no necesita
+autenticación; la Web API solo hace falta cuando la música suena en otro
+aparato por Spotify Connect. Al revés, el volumen del PC prefiere la API de
+audio porque permite un porcentaje exacto: las teclas solo se mueven de 2% en
+2%.
+
+Coste medido de anclar el destino: *"termina el spotify"* se fue a `volume.mute`
+(0.532 contra 0.357 de `app.close`) en cuanto se añadió *"silencia spotify"* al
+catálogo. Cerrar una aplicación y silenciarla son cosas muy distintas y el
+encoder no lo sabía: hubo que anclar el otro lado (`termina spotify`, `mata
+spotify`), y quedó en 0.641 contra 0.524. **Es el mismo patrón que las
+negaciones y las formas enclíticas: al anclar un lado, hay que medir el
+opuesto.**
+
 ### Los slots se extraen después de decidir el intent
 
 Los embeddings clasifican intenciones; no extraen parámetros. Una vez el intent
@@ -123,6 +152,24 @@ no tienen que desambiguar nada, "pon" puede aparecer en `spotify.play` y en
 
 Si el regex no encuentra el argumento, **solo ese caso** escala al LLM — no toda
 la categoría de comandos.
+
+Los patrones de un intent se recorren **todos**, acumulando, y para cada clave
+manda el primero que la rellena. Así un intent puede repartir sus argumentos en
+regex independientes —*"pon el volumen de spotify al 45"* necesita uno para el
+nivel y otro para el destino— sin cambiar el comportamiento donde varios
+patrones son alternativas del mismo argumento.
+
+### `SendInput` y el tamaño de `INPUT`
+
+`SendInput` exige que `cbSize` sea exactamente `sizeof(INPUT)`: 40 bytes en x64.
+El tamaño lo fija `MOUSEINPUT` (32 bytes), no `KEYBDINPUT` (24), así que declarar
+la unión solo con el miembro que se usa da 32 y Windows rechaza la llamada
+entera devolviendo 0.
+
+Es un fallo silencioso por partida doble: no lanza excepción, y el respaldo por
+teclas solo se ejercita cuando la Web API de Spotify ya ha fallado, así que
+puede pasar meses sin manifestarse. `tests/test_winkeys.py` fija el tamaño y el
+motivo.
 
 ### Seguridad: el LLM nunca genera código
 
