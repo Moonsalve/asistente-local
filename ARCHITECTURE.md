@@ -122,18 +122,32 @@ partirlas en dos intents las haría indistinguibles por coseno. Hay **un intent
 por dirección** (subir, bajar, fijar, silenciar, consultar) y el destino viaja
 como slot `target`, que por defecto vale `system`.
 
-La resolución vuelve a decidirse con datos, no con similitud:
+Cada destino tiene su mecanismo, y no se cruzan:
 
 ```
-Spotify:  mezclador de Windows (ISimpleAudioVolume)  →  Web API de Spotify
-PC:       IAudioEndpointVolume                       →  teclas multimedia
+Spotify:  Web API  (el mando de dentro de la app)          — sin alternativa
+PC:       IAudioEndpointVolume  →  teclas multimedia
 ```
 
-El mezclador va primero porque es local, instantáneo y no necesita
-autenticación; la Web API solo hace falta cuando la música suena en otro
-aparato por Spotify Connect. Al revés, el volumen del PC prefiere la API de
-audio porque permite un porcentaje exacto: las teclas solo se mueven de 2% en
-2%.
+Windows ofrece un segundo mando por aplicación (`ISimpleAudioVolume`, la barra
+del mezclador) que **se llegó a usar para Spotify y se quitó**: es instantáneo y
+no necesita autenticación, pero no es el mando que la gente quiere decir. Solo
+afecta a lo que este PC saca por los altavoces, no se refleja en Spotify y no se
+sincroniza con el móvil. Se paga un viaje de red por hacerlo bien.
+
+**No hay degradación de Spotify al mezclador**, aunque sería fácil. Un fallback
+que cambia *otro* volumen distinto del pedido es peor que un fallo: algo se
+mueve, así que parece que funcionó.
+
+El volumen del PC sí degrada a teclas, porque ahí ambos mecanismos mueven
+exactamente el mismo mando; la única diferencia es la precisión (las teclas van
+de 2% en 2%).
+
+**Con número se fija, sin número se da un paso.** Y eso no depende de qué intent
+gane: medido, *"sube el volumen al 50"* gana `volume.up` (0.635) y no
+`volume.set`, porque el verbo pesa más que el número. En vez de pelear con el
+router, los dos intents extraen el nivel y la skill lo prefiere sobre el paso —
+la duda del router deja de tener consecuencias.
 
 Coste medido de anclar el destino: *"termina el spotify"* se fue a `volume.mute`
 (0.532 contra 0.357 de `app.close`) en cuanto se añadió *"silencia spotify"* al

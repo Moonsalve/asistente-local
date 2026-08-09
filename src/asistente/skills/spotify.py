@@ -174,12 +174,17 @@ class SpotifyClient:
             return None
         return str(item.get("name", ""))
 
-    def get_volume_percent(self) -> int | None:
-        """Volumen del dispositivo activo segun Spotify, o None.
+    def volume_state(self) -> tuple[str, int] | None:
+        """`(device_id, volumen)` del dispositivo activo, en UNA sola llamada.
 
-        Es el volumen *del reproductor*, no el del mezclador de Windows: son dos
-        mandos distintos y este es el unico que existe cuando la musica suena en
-        el movil o en un altavoz.
+        Es el volumen *del reproductor*: el mando que mueve la barra dentro de
+        Spotify y que se sincroniza con el movil y con los altavoces de Connect.
+        No tiene nada que ver con el del mezclador de Windows.
+
+        Devuelve las dos cosas juntas a proposito. `current_playback()` ya trae
+        el dispositivo entero, asi que preguntar por el volumen y luego por el
+        dispositivo serian dos viajes de red para leer un unico objeto — y con
+        la Web API en la ruta critica del comando, cada viaje se oye.
         """
         if self._client is None:
             return None
@@ -188,18 +193,31 @@ class SpotifyClient:
         except Exception:
             log.exception("no se pudo leer el volumen de Spotify")
             return None
+
         device = (state or {}).get("device") or {}
         volume = device.get("volume_percent")
-        return int(volume) if volume is not None else None
+        if not device.get("id") or volume is None:
+            return None
+        return str(device["id"]), int(volume)
 
-    def set_volume_percent(self, level: int) -> bool:
-        """Fija el volumen del dispositivo activo. `level` se recorta a 0-100.
+    def get_volume_percent(self) -> int | None:
+        state = self.volume_state()
+        return None if state is None else state[1]
+
+    def set_volume_percent(self, level: int, device_id: str | None = None) -> bool:
+        """Fija el volumen del reproductor. `level` se recorta a 0-100.
+
+        `device_id` se pasa cuando quien llama ya lo sabe (porque acaba de leer
+        el estado), y asi se ahorra la consulta de dispositivos.
 
         Spotify devuelve 403 en dispositivos que no admiten control de volumen
         (bastantes altavoces de Connect, y el reproductor web). Se traga la
-        excepcion y devuelve False: quien llama decide si degradar.
+        excepcion y devuelve False: quien llama decide que decir.
         """
-        if self._client is None or (device := self._active_device()) is None:
+        if self._client is None:
+            return False
+        device = device_id or self._active_device()
+        if device is None:
             return False
         try:
             self._client.volume(max(0, min(100, level)), device_id=device)

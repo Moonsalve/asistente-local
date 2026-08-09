@@ -38,7 +38,7 @@ def build_registry(config: Config, secrets: Secrets) -> tuple[SkillRegistry, Spo
     spotify = SpotifyClient(config, secrets)
     browser = Browser.from_path(config.web.browser, config.web.browser_path)
     use_keys = config.spotify.fallback_to_media_keys
-    volume = VolumeController(spotify, config.spotify.process_names)
+    volume = VolumeController(spotify)
 
     skills: list[Skill] = [
         NextTrackSkill(spotify, use_keys),

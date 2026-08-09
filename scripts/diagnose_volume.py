@@ -86,38 +86,37 @@ def check_master() -> bool:
 
 
 def check_mixer(process_names: tuple[str, ...]) -> bool:
-    print("\n3. MEZCLADOR POR APLICACION (ISimpleAudioVolume)")
+    """Informativo. El volumen de Spotify NO se controla por aqui —se decidio
+    que "el volumen de Spotify" es el de dentro de la app, no el del mezclador—
+    pero ver a Spotify en esta lista confirma que esta sonando de verdad, que es
+    la causa mas comun de que el punto 4 falle."""
+    print("\n3. MEZCLADOR DE WINDOWS (informativo: quien tiene audio abierto)")
     sessions = winaudio.list_sessions()
     if not sessions:
-        print(f"{MAL} el mezclador esta vacio: {winaudio.last_error() or 'sin sesiones'}")
-        print("      Solo aparecen aplicaciones con audio abierto. Pon algo a")
-        print("      sonar en Spotify y vuelve a ejecutar esto.")
-        return False
+        print(f"{NA} el mezclador esta vacio: {winaudio.last_error() or 'sin sesiones'}")
+        print("      Solo aparecen aplicaciones con audio abierto.")
+        return True
 
-    print("      aplicaciones con audio abierto ahora mismo:")
+    buscados = {n.lower() for n in process_names}
+    visto = False
     for s in sessions:
-        marca = "*" if s.process.lower() in {n.lower() for n in process_names} else " "
+        marca = " "
+        if s.process.lower() in buscados:
+            marca, visto = "*", True
         print(f"       {marca} {s.process:<32} {s.percent:>3}%  silenciada={s.muted}")
 
-    current = winaudio.app_percent(process_names)
-    if current is None:
-        print(f"{MAL} {', '.join(process_names)} no tiene sesion de audio.")
-        print("      El volumen de Spotify caera a la Web API (mas lento, y")
-        print("      requiere dispositivo activo).")
-        return False
-
-    objetivo = 30 if current > 50 else 70
-    if not winaudio.set_app_percent(process_names, objetivo):
-        print(f"{MAL} no se pudo escribir: {winaudio.last_error()}")
-        return False
-    leido = winaudio.app_percent(process_names)
-    winaudio.set_app_percent(process_names, current)
-    print(f"{OK} volumen de Spotify: {current}% -> {leido}% -> restaurado")
+    if visto:
+        print(f"{OK} Spotify esta sonando en este PC")
+    else:
+        print(f"{NA} Spotify no tiene audio abierto aqui (puede estar en el movil)")
     return True
 
 
 def check_web_api(config: Config) -> bool:
-    print("\n4. WEB API DE SPOTIFY (volumen remoto)")
+    """Esta es LA via del volumen de Spotify. Si falla, "baja el volumen de
+    Spotify" no tiene alternativa: no se degrada al mezclador a proposito,
+    porque seria hacer justo lo que no se pidio y sin avisar."""
+    print("\n4. WEB API DE SPOTIFY  <-- la via del volumen de Spotify")
     client = SpotifyClient(config, Secrets())
     if not client.available:
         print(f"{NA} Spotify desactivado o sin client_id; no aplica")
@@ -155,8 +154,8 @@ def main() -> int:
     resultados = {
         "teclas multimedia": check_send_input(),
         "volumen del PC": check_master(),
-        "volumen de Spotify (local)": check_mixer(procesos),
-        "volumen de Spotify (remoto)": check_web_api(config),
+        "mezclador (informativo)": check_mixer(procesos),
+        "volumen de Spotify": check_web_api(config),
     }
 
     print("\n" + "=" * 72)
@@ -167,11 +166,11 @@ def main() -> int:
         print("\nEl volumen del PC no tiene ninguna via disponible. Empieza por el")
         print("punto 2: sin pycaw/comtypes instalados en el venv activo, no hay nada")
         print("que hacer (pip install -e .).")
-    elif not resultados["volumen de Spotify (local)"] and not resultados[
-        "volumen de Spotify (remoto)"
-    ]:
-        print("\nEl volumen de Spotify no tiene via: ni sesion en el mezclador ni")
-        print("dispositivo activo en la API. Pon musica a sonar y repite.")
+    elif not resultados["volumen de Spotify"]:
+        print("\nEl volumen de Spotify no tiene via alternativa: se decidio que sea")
+        print("siempre el mando de dentro de la app, y no se degrada al mezclador")
+        print("porque seria cambiar otro volumen distinto sin avisar. Pon musica a")
+        print("sonar en Spotify y repite.")
 
     return 0 if all(resultados.values()) else 1
 

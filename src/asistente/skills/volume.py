@@ -16,12 +16,20 @@ sistema, que es lo que uno espera al decir "sube el volumen" a secas.
 
 COMO SE RESUELVE CADA DESTINO
 -----------------------------
-- **Sistema**: `IAudioEndpointVolume` (porcentaje exacto). Si falla, teclas
-  multimedia, que solo se mueven a saltos de 2%.
-- **Spotify**: primero la sesion del mezclador de Windows (instantanea, no
-  necesita autenticacion, funciona aunque no haya dispositivo de Connect); si
-  Spotify no tiene audio abierto en este PC, la Web API, que es lo unico que
-  sirve cuando la musica esta sonando en el movil o en un altavoz.
+- **Sistema** (`target=system`, el que manda cuando la frase no dice otra cosa):
+  el volumen maestro de Windows por `IAudioEndpointVolume`, que permite fijar un
+  porcentaje exacto. Si la API de audio no esta disponible, teclas multimedia,
+  que solo se mueven a saltos de 2%.
+- **Spotify** (`target=spotify`): **siempre la Web API**, es decir el mando de
+  dentro de la aplicacion. Nunca el mezclador de volumen de Windows: ese es otro
+  mando distinto, solo afecta a lo que sale por los altavoces de este PC y no se
+  refleja en ninguna parte de Spotify.
+
+CON VALOR O SIN VALOR
+---------------------
+Sin numero en la frase se mueve un paso relativo; con numero se fija ese valor
+exacto. Esto vale para los dos destinos y no depende de que intent gane el
+router: ver la nota en `VolumeStepSkill.execute`.
 """
 
 from __future__ import annotations
@@ -121,9 +129,14 @@ class VolumeController:
     poder testear la resolucion sin Windows.
     """
 
-    def __init__(self, spotify: SpotifyClient | None, process_names: tuple[str, ...]) -> None:
+    def __init__(self, spotify: SpotifyClient | None) -> None:
         self._spotify = spotify
-        self._process_names = process_names
+        #: Volumen previo al silenciar, para poder deshacerlo. La Web API no
+        #: tiene "mute": silenciar es poner 0, y sin recordar de donde venias no
+        #: hay forma de volver. Vive en memoria y no en disco a proposito:
+        #: silenciar y quitar el silencio pasan en la misma sesion, y persistir
+        #: un valor entre reinicios daria sorpresas mucho peores que olvidarlo.
+        self._spotify_volume_before_mute: int | None = None
 
     # ------------------------------------------------------------- sistema
     def _system_set(self, level: int) -> VolumeChange:
@@ -158,48 +171,62 @@ class VolumeController:
         return _FALLO
 
     # ------------------------------------------------------------- spotify
+    #
+    # SIEMPRE la Web API, nunca el mezclador de Windows. Son dos mandos
+    # distintos y el que la gente quiere decir con "el volumen de Spotify" es el
+    # de dentro de la aplicacion: es el que se ve en la barra de Spotify y el
+    # que se sincroniza con el movil y con los altavoces de Connect. El del
+    # mezclador solo afecta a lo que este PC saca por los altavoces y no se ve
+    # desde ninguna parte de Spotify.
+    #
+    # Se paga en latencia -un viaje de red frente a unos milisegundos- y en que
+    # deja de funcionar si no hay dispositivo activo. A cambio, el comando hace
+    # lo que dice. No hay degradacion al mezclador: seria hacer justo lo que no
+    # se pidio, y en silencio.
+
     def _spotify_set(self, level: int) -> VolumeChange:
-        before = winaudio.app_percent(self._process_names)
-        if winaudio.set_app_percent(self._process_names, level):
-            after = winaudio.app_percent(self._process_names)
-            return VolumeChange(True, "mezclador", before, after)
         if self._spotify is None:
             return _FALLO
-        remoto = self._spotify.get_volume_percent()
-        if not self._spotify.set_volume_percent(level):
+        state = self._spotify.volume_state()
+        if state is None:
             return _FALLO
-        return VolumeChange(True, "spotify-api", remoto, level)
+        device, before = state
+        if not self._spotify.set_volume_percent(level, device_id=device):
+            return _FALLO
+        return VolumeChange(True, "spotify-api", before, max(0, min(100, level)))
 
     def _spotify_step(self, delta: int) -> VolumeChange:
-        before = winaudio.app_percent(self._process_names)
-        if before is not None:
-            if not winaudio.set_app_percent(self._process_names, before + delta):
-                return _FALLO
-            after = winaudio.app_percent(self._process_names)
-            return VolumeChange(True, "mezclador", before, after)
-
         if self._spotify is None:
             return _FALLO
-        remoto = self._spotify.get_volume_percent()
-        if remoto is None:
+        state = self._spotify.volume_state()
+        if state is None:
             return _FALLO
-        objetivo = max(0, min(100, remoto + delta))
-        if not self._spotify.set_volume_percent(objetivo):
+        device, before = state
+        objetivo = max(0, min(100, before + delta))
+        if not self._spotify.set_volume_percent(objetivo, device_id=device):
             return _FALLO
-        return VolumeChange(True, "spotify-api", remoto, objetivo)
+        return VolumeChange(True, "spotify-api", before, objetivo)
 
     def _spotify_toggle_mute(self) -> VolumeChange:
-        muted = winaudio.app_muted(self._process_names)
-        if muted is not None:
-            if not winaudio.set_app_muted(self._process_names, not muted):
-                return _FALLO
-            return VolumeChange(True, "mezclador")
-        # La Web API no tiene "mute": silenciar es poner el volumen a 0. No se
-        # intenta deshacerlo porque no hay donde guardar el valor anterior de
-        # forma fiable entre reinicios; para eso ya esta "pon spotify al 50".
-        if self._spotify is not None and self._spotify.set_volume_percent(0):
-            return VolumeChange(True, "spotify-api")
-        return _FALLO
+        if self._spotify is None:
+            return _FALLO
+        state = self._spotify.volume_state()
+        if state is None:
+            return _FALLO
+        device, before = state
+
+        if before > 0:
+            objetivo = 0
+            self._spotify_volume_before_mute = before
+        else:
+            # Ya estaba en 0: esto es "quita el silencio". Si no sabemos de
+            # donde venia -el asistente arranco con Spotify ya en 0- se deja a
+            # la mitad, que es audible sin asustar.
+            objetivo = self._spotify_volume_before_mute or 50
+
+        if not self._spotify.set_volume_percent(objetivo, device_id=device):
+            return _FALLO
+        return VolumeChange(True, "spotify-api", before, objetivo)
 
     # -------------------------------------------------------------- publico
     def set_level(self, target: VolumeTarget, level: int) -> VolumeChange:
@@ -231,9 +258,6 @@ class VolumeController:
 
     def current(self, target: VolumeTarget) -> int | None:
         if target is VolumeTarget.SPOTIFY:
-            local = winaudio.app_percent(self._process_names)
-            if local is not None:
-                return local
             return self._spotify.get_volume_percent() if self._spotify else None
         return winaudio.master_percent()
 

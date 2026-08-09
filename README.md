@@ -15,7 +15,7 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 3 etapas + skills | **Hecha y verificada** (201 tests) |
+| 2 | Router de 3 etapas + skills | **Hecha y verificada** (203 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 5 | Benchmark y tuning | Pendiente |
@@ -100,7 +100,7 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 201 tests, ~2 s
+PYTHONPATH=src pytest -q                           # 203 tests, ~2 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
 PYTHONPATH=src python scripts/diagnose_volume.py   # qué mecanismo de volumen falla
 ```
@@ -251,16 +251,25 @@ en el mezclador de volumen de Windows.
 | *"Apolo, silencia Spotify"* | mutea solo Spotify |
 | *"Apolo, a qué volumen está la música"* | lo dice en voz alta |
 
-El volumen por aplicación es **multiplicativo** sobre el maestro: con Windows al
-50% y Spotify al 100%, Spotify suena al 50% real. Es el mismo comportamiento que
-si movieras las barras a mano.
+**Con número fija ese valor; sin número se mueve un paso** (10%). Vale para los
+dos destinos: *"sube el volumen"* sube el del PC de 10 en 10, *"sube el volumen
+al 60"* lo pone en 60.
 
-Spotify se controla primero por el **mezclador de Windows** (instantáneo, no
-necesita autenticación) y solo se recurre a la **Web API** si Spotify no tiene
-audio abierto en este PC — por ejemplo cuando la música suena en el móvil o en
-un altavoz por Spotify Connect. Algunos dispositivos de Connect y el reproductor
-web rechazan el cambio de volumen con un 403; eso es de Spotify, no del
-asistente.
+### Por qué Spotify va siempre por la app y no por el mezclador
+
+Windows tiene un segundo mando —la barra de cada programa en el mezclador de
+volumen— y es **otra cosa distinta**: solo afecta a lo que este PC saca por los
+altavoces, no se ve desde ninguna parte de Spotify y no se sincroniza con el
+móvil. El volumen de Spotify es el de **dentro de Spotify**, y ese solo se toca
+por la Web API.
+
+Se pagan dos cosas por hacerlo bien: un viaje de red (unas décimas frente a
+milisegundos) y que deja de funcionar si no hay dispositivo activo. **No hay
+degradación al mezclador a propósito**: sería cambiar un volumen distinto del
+que pediste, y en silencio. Si no hay dispositivo, el asistente lo dice.
+
+Algunos dispositivos de Connect y el reproductor web rechazan el cambio de
+volumen con un 403; eso es de Spotify, no del asistente.
 
 Si algo de esto no responde:
 
@@ -276,8 +285,8 @@ Si el diagnóstico sale en verde pero un comando concreto no hace lo esperado, e
 propio asistente lo dice en el log en cada turno:
 
 ```
-volumen spotify (paso +10): ok vía mezclador (80 -> 90)
-volumen system (paso -10): ok vía teclas (5/5) (? -> ?)
+volumen spotify (paso +10): ok vía spotify-api (80 -> 90)
+volumen system (paso -10): ok vía api-maestra (60 -> 50)
 volumen spotify (fijar a 40): FALLO vía ninguna (? -> ?)
 ```
 

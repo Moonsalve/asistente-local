@@ -1,31 +1,28 @@
-"""Volumen de Windows: maestro y por aplicacion, via la API de audio (pycaw).
+"""Volumen maestro de Windows, via la API de audio (pycaw).
 
-DOS NIVELES DISTINTOS
----------------------
-Windows tiene dos mandos independientes y el usuario los percibe como cosas
-distintas, asi que el asistente tambien los trata como tales:
+`IAudioEndpointVolume` es el mando del dispositivo de salida: el que mueve la
+ruedecita del teclado y afecta a todo lo que suena en el PC. Es el que se usa
+cuando dices "sube el volumen" sin especificar nada mas.
 
-- **Maestro** (`IAudioEndpointVolume`): el mando del dispositivo de salida. Es
-  el que mueve la ruedecita del teclado y afecta a todo.
-- **Por aplicacion** (`ISimpleAudioVolume`): la barra que sale en el mezclador
-  de volumen para cada programa. Es *multiplicativa* sobre el maestro: con el
-  maestro al 50% y Spotify al 100%, Spotify suena al 50% real.
+POR QUE AQUI NO HAY VOLUMEN POR APLICACION
+------------------------------------------
+Windows tiene un segundo mando, `ISimpleAudioVolume`, que es la barra del
+mezclador de volumen para cada programa. Se llego a usar para "baja el volumen
+de Spotify" porque es instantaneo y no necesita autenticacion, y **se quito a
+proposito**: no es el mando que la gente quiere decir. El del mezclador solo
+afecta a lo que este PC saca por los altavoces, no se ve desde ninguna parte de
+Spotify y no se sincroniza con el movil. "El volumen de Spotify" es el de dentro
+de Spotify, y ese solo se toca por la Web API (ver `skills/volume.py`).
 
-"Sube el volumen de Spotify" es lo segundo. Hacerlo por aqui y no por la Web API
-tiene dos ventajas: funciona aunque Spotify no tenga sesion de Connect activa, y
-cuesta milisegundos en vez de un viaje de red.
+Queda `list_sessions()`, que solo lee, porque saber que aplicaciones tienen
+audio abierto es util en el diagnostico.
 
-Limite conocido: solo existe sesion mientras la aplicacion tiene audio abierto.
-Spotify cerrado -o abierto pero sin haber sonado nunca- no aparece en el
-mezclador. Para ese caso esta el fallback a la Web API en `skills/volume.py`.
-
-POR QUE SE CACHEA EL ENDPOINT PERO NO LAS SESIONES
---------------------------------------------------
-Activar el endpoint maestro cuesta una activacion COM (decenas de ms) y el
-dispositivo de salida rara vez cambia, asi que se cachea y se invalida si una
-llamada falla (que es justo lo que pasa al cambiar de dispositivo: la interfaz
-vieja empieza a devolver errores). Las sesiones, en cambio, aparecen y
-desaparecen con las aplicaciones, asi que se enumeran en cada llamada.
+POR QUE SE CACHEA EL ENDPOINT
+-----------------------------
+Activarlo cuesta una activacion COM (decenas de ms) y el dispositivo de salida
+rara vez cambia, asi que se cachea y se invalida si una llamada falla — que es
+justo lo que pasa al cambiar de altavoces a auriculares: la interfaz vieja sigue
+viva pero empieza a devolver errores.
 
 Fuera de Windows todo devuelve None/False sin lanzar, para poder importar y
 testear en la Mac.
@@ -35,7 +32,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -222,82 +218,10 @@ def set_master_muted(muted: bool) -> bool:
     return bool(done)
 
 
-def _matching_sessions(process_names: Sequence[str]) -> list[Any]:
-    """Controles `ISimpleAudioVolume` de los procesos indicados.
-
-    Devuelve *todos* los que casan, no el primero: Spotify abre varios procesos
-    y no siempre es el mismo el que tiene el audio, asi que se les aplica el
-    cambio a todos y asi el resultado no depende del orden de enumeracion.
-    """
-    if not _ensure_com():
-        return []
-    wanted = {name.lower().removesuffix(".exe") for name in process_names}
-    found: list[Any] = []
-    try:  # pragma: no cover - solo en el PC destino
-        from pycaw.pycaw import AudioUtilities
-
-        for session in AudioUtilities.GetAllSessions():
-            if session.Process is None or session.SimpleAudioVolume is None:
-                continue
-            try:
-                name = session.Process.name()
-            except Exception:
-                # El proceso murio entre enumerar y consultar. Normal.
-                continue
-            if name.lower().removesuffix(".exe") in wanted:
-                found.append(session.SimpleAudioVolume)
-    except ImportError as exc:
-        _fail("falta pycaw/comtypes (pip install -e .)", exc)
-    except Exception as exc:
-        _fail("no se pudo enumerar el mezclador de volumen", exc)
-    return found
-
-
-def app_percent(process_names: Sequence[str]) -> int | None:
-    """Volumen de la aplicacion en el mezclador (0-100), o None si no suena."""
-    for control in _matching_sessions(process_names):
-        try:  # pragma: no cover - solo en el PC destino
-            return round(float(control.GetMasterVolume()) * 100)
-        except Exception as exc:
-            _fail("no se pudo leer el volumen de la aplicacion", exc)
-    return None
-
-
-def set_app_percent(process_names: Sequence[str], level: int) -> bool:
-    """Fija el volumen de la aplicacion. False si no tiene sesion de audio."""
-    scalar = _clamp(level) / 100.0
-    changed = False
-    for control in _matching_sessions(process_names):
-        try:  # pragma: no cover - solo en el PC destino
-            control.SetMasterVolume(scalar, None)
-            changed = True
-        except Exception as exc:
-            _fail("no se pudo fijar el volumen de la aplicacion", exc)
-    return changed
-
-
-def app_muted(process_names: Sequence[str]) -> bool | None:
-    for control in _matching_sessions(process_names):
-        try:  # pragma: no cover - solo en el PC destino
-            return bool(control.GetMute())
-        except Exception as exc:
-            _fail("no se pudo leer el silencio de la aplicacion", exc)
-    return None
-
-
-def set_app_muted(process_names: Sequence[str], muted: bool) -> bool:
-    changed = False
-    for control in _matching_sessions(process_names):
-        try:  # pragma: no cover - solo en el PC destino
-            control.SetMute(bool(muted), None)
-            changed = True
-        except Exception as exc:
-            _fail("no se pudo silenciar la aplicacion", exc)
-    return changed
-
-
 def list_sessions() -> list[SessionInfo]:
-    """Todo el mezclador, para `scripts/diagnose_volume.py`."""
+    """Que aplicaciones tienen audio abierto. Solo lectura, y solo la usa
+    `scripts/diagnose_volume.py`: sirve para confirmar que Spotify esta de
+    verdad sonando cuando un comando de volumen no responde."""
     if not _ensure_com():
         return []
     out: list[SessionInfo] = []

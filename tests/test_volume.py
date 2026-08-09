@@ -1,9 +1,9 @@
-"""Tests del control de volumen: resolucion de destino y cascada de fallbacks.
+"""Tests del control de volumen: resolucion de destino y eleccion de mecanismo.
 
-La parte que de verdad importa aqui no es que suba el volumen -eso solo se puede
-comprobar en Windows- sino el ORDEN en que se intentan los mecanismos. Cada
-destino tiene dos vias y elegir mal la primera es la diferencia entre un comando
-instantaneo y uno que hace un viaje de red para nada, o que no hace nada.
+Lo que de verdad se comprueba aqui no es que suba el volumen -eso solo se puede
+ver en Windows- sino A QUE MANDO va cada comando. El sistema y Spotify usan APIs
+distintas que no se hablan entre si, y equivocarse de mando produce el peor tipo
+de fallo: el que parece funcionar porque algo se mueve, pero no lo que pedias.
 """
 
 from __future__ import annotations
@@ -24,9 +24,6 @@ from asistente.skills.volume import (
     VolumeTarget,
     resolve_target,
 )
-
-PROCESOS = ("Spotify.exe",)
-
 
 # ------------------------------------------------- formas de la API de pycaw
 
@@ -85,11 +82,20 @@ class FakeSpotify:
         self.volume = volume
         self.writable = writable
         self.writes: list[int] = []
+        #: Cuantas veces se pidio el dispositivo por separado. Debe quedarse en
+        #: 0: el id viene de la misma lectura que el volumen.
+        self.devices_consultados = 0
+
+    def volume_state(self) -> tuple[str, int] | None:
+        """None cuando no hay dispositivo activo: Spotify cerrado o parado."""
+        return None if self.volume is None else ("device-1", self.volume)
 
     def get_volume_percent(self) -> int | None:
         return self.volume
 
-    def set_volume_percent(self, level: int) -> bool:
+    def set_volume_percent(self, level: int, device_id: str | None = None) -> bool:
+        if device_id is None:
+            self.devices_consultados += 1
         if not self.writable:
             return False
         self.writes.append(level)
@@ -100,15 +106,13 @@ class FakeSpotify:
 class FakeWinAudio:
     """Sustituto de `winaudio` con estado en memoria.
 
-    `app_percent` devuelve None cuando Spotify no tiene sesion en el mezclador
-    (cerrado, o abierto pero sin haber sonado nunca).
+    `master=None` simula que la API de audio no esta disponible, que es cuando
+    el volumen del PC cae a las teclas multimedia.
     """
 
-    def __init__(self, master: int | None = 40, app: int | None = 80) -> None:
+    def __init__(self, master: int | None = 40) -> None:
         self.master = master
-        self.app = app
         self.master_mute = False
-        self.app_mute: bool | None = False
 
     def master_percent(self) -> int | None:
         return self.master
@@ -126,24 +130,6 @@ class FakeWinAudio:
         if self.master is None:
             return False
         self.master_mute = muted
-        return True
-
-    def app_percent(self, names: Any) -> int | None:
-        return self.app
-
-    def set_app_percent(self, names: Any, level: int) -> bool:
-        if self.app is None:
-            return False
-        self.app = max(0, min(100, level))
-        return True
-
-    def app_muted(self, names: Any) -> bool | None:
-        return self.app_mute
-
-    def set_app_muted(self, names: Any, muted: bool) -> bool:
-        if self.app is None:
-            return False
-        self.app_mute = muted
         return True
 
 
@@ -187,7 +173,7 @@ def test_target_defaults_to_system_when_absent() -> None:
 
 
 def test_system_step_uses_the_audio_api(win: FakeWinAudio) -> None:
-    controller = VolumeController(FakeSpotify(), PROCESOS)
+    controller = VolumeController(FakeSpotify())
     assert controller.step(VolumeTarget.SYSTEM, 10).ok is True
     assert win.master == 50
 
@@ -196,7 +182,7 @@ def test_system_step_clamps_at_the_top(win: FakeWinAudio) -> None:
     """Windows recorta solo, pero si el recorte se hiciera en el asistente con
     un signo mal puesto el volumen saltaria al 0% en vez de quedarse al 100%."""
     win.master = 95
-    controller = VolumeController(FakeSpotify(), PROCESOS)
+    controller = VolumeController(FakeSpotify())
     controller.step(VolumeTarget.SYSTEM, 10)
     assert win.master == 100
 
@@ -208,13 +194,13 @@ def test_system_step_falls_back_to_media_keys(monkeypatch: pytest.MonkeyPatch) -
     pulsaciones: list[Any] = []
     monkeypatch.setattr(volume_module, "press", lambda key: pulsaciones.append(key) or True)
 
-    controller = VolumeController(FakeSpotify(), PROCESOS)
+    controller = VolumeController(FakeSpotify())
     assert controller.step(VolumeTarget.SYSTEM, 10).ok is True
     assert len(pulsaciones) == 5
 
 
 def test_system_mute_toggles(win: FakeWinAudio) -> None:
-    controller = VolumeController(FakeSpotify(), PROCESOS)
+    controller = VolumeController(FakeSpotify())
     controller.toggle_mute(VolumeTarget.SYSTEM)
     assert win.master_mute is True
     controller.toggle_mute(VolumeTarget.SYSTEM)
@@ -222,55 +208,80 @@ def test_system_mute_toggles(win: FakeWinAudio) -> None:
 
 
 # --------------------------------------------------------------- spotify
+#
+# SIEMPRE la Web API, NUNCA el mezclador de Windows. Son mandos distintos: el de
+# Spotify se ve en la barra de la app y se sincroniza con el movil; el del
+# mezclador solo afecta a lo que sale por los altavoces de este PC. Bajar el que
+# no es produce el fallo mas confuso posible, porque algo baja de volumen.
 
 
-def test_spotify_prefers_the_windows_mixer(win: FakeWinAudio) -> None:
-    """El mezclador va primero: es local, instantaneo y funciona sin dispositivo
-    de Connect. La Web API solo entra cuando aqui no hay nada."""
-    spotify = FakeSpotify()
-    controller = VolumeController(spotify, PROCESOS)
+def test_spotify_always_goes_through_the_app(win: FakeWinAudio) -> None:
+    spotify = FakeSpotify(volume=80)
+    controller = VolumeController(spotify)
 
-    assert controller.step(VolumeTarget.SPOTIFY, 10).ok is True
-    assert win.app == 90
-    assert spotify.writes == []
+    outcome = controller.step(VolumeTarget.SPOTIFY, 10)
+
+    assert outcome.ok is True
+    assert outcome.via == "spotify-api"
+    assert spotify.writes == [90]
+    assert win.master == 40  # el del PC intacto
 
 
-def test_spotify_falls_back_to_the_web_api(win: FakeWinAudio) -> None:
-    """Sin sesion local -musica sonando en el movil o en un altavoz- la Web API
-    es el unico mando que existe."""
-    win.app = None
-    spotify = FakeSpotify(volume=50)
-    controller = VolumeController(spotify, PROCESOS)
+def test_spotify_step_clamps_without_a_wasted_call(win: FakeWinAudio) -> None:
+    """Ya al 100%: se envia 100, no 110. `at_limit` deja que la skill lo diga."""
+    spotify = FakeSpotify(volume=100)
+    outcome = VolumeController(spotify).step(VolumeTarget.SPOTIFY, 10)
 
-    assert controller.step(VolumeTarget.SPOTIFY, 10).ok is True
-    assert spotify.writes == [60]
+    assert spotify.writes == [100]
+    assert outcome.at_limit is True
 
 
 def test_spotify_fails_cleanly_when_nothing_is_playing(win: FakeWinAudio) -> None:
-    """Ni sesion local ni dispositivo activo: se devuelve False para que la
-    skill lo diga en voz alta en vez de fingir que funciono."""
-    win.app = None
-    controller = VolumeController(FakeSpotify(volume=None), PROCESOS)
-    assert controller.step(VolumeTarget.SPOTIFY, 10).ok is False
+    """Sin dispositivo activo no hay alternativa: NO se degrada al mezclador,
+    porque seria cambiar un volumen distinto del pedido y sin avisar."""
+    outcome = VolumeController(FakeSpotify(volume=None)).step(VolumeTarget.SPOTIFY, 10)
+    assert outcome.ok is False
 
 
-def test_spotify_without_client_still_uses_the_mixer(win: FakeWinAudio) -> None:
-    """Spotify sin autorizar (sin client_id) no impide bajarle el volumen: el
-    mezclador de Windows no necesita credenciales."""
-    controller = VolumeController(None, PROCESOS)
-    assert controller.step(VolumeTarget.SPOTIFY, -20).ok is True
-    assert win.app == 60
+def test_spotify_without_client_fails_instead_of_touching_the_mixer(
+    win: FakeWinAudio,
+) -> None:
+    """Spotify sin autorizar: el comando falla y lo dice. Antes esto bajaba el
+    volumen del mezclador, que es exactamente lo que no se quiere."""
+    outcome = VolumeController(None).step(VolumeTarget.SPOTIFY, -20)
+    assert outcome.ok is False
 
 
-def test_spotify_mute_via_web_api_sets_volume_to_zero(win: FakeWinAudio) -> None:
-    """La Web API no tiene silencio; lo mas parecido es el 0%."""
-    win.app = None
-    win.app_mute = None
-    spotify = FakeSpotify()
-    controller = VolumeController(spotify, PROCESOS)
+def test_spotify_reuses_the_device_from_the_state_read(win: FakeWinAudio) -> None:
+    """El id del dispositivo sale de la misma lectura que el volumen. Pedirlo
+    aparte serian dos viajes de red por comando, y la Web API esta en la ruta
+    critica desde que es la unica via."""
+    spotify = FakeSpotify(volume=50)
+    VolumeController(spotify).step(VolumeTarget.SPOTIFY, 10)
+    assert spotify.devices_consultados == 0
 
-    assert controller.toggle_mute(VolumeTarget.SPOTIFY).ok is True
+
+def test_spotify_mute_remembers_where_it_came_from(win: FakeWinAudio) -> None:
+    """La Web API no tiene silencio: silenciar es poner 0. Sin recordar el valor
+    previo, quitar el silencio seria imposible."""
+    spotify = FakeSpotify(volume=70)
+    controller = VolumeController(spotify)
+
+    controller.toggle_mute(VolumeTarget.SPOTIFY)
     assert spotify.writes == [0]
+
+    controller.toggle_mute(VolumeTarget.SPOTIFY)
+    assert spotify.writes == [0, 70]
+
+
+def test_spotify_unmute_without_memory_lands_somewhere_audible(
+    win: FakeWinAudio,
+) -> None:
+    """Spotify ya estaba en 0 al arrancar el asistente: no hay valor previo que
+    restaurar, y dejarlo en 0 haria que el comando pareciera roto."""
+    spotify = FakeSpotify(volume=0)
+    VolumeController(spotify).toggle_mute(VolumeTarget.SPOTIFY)
+    assert spotify.writes == [50]
 
 
 # ----------------------------------------------------------------- skills
@@ -279,9 +290,9 @@ def test_spotify_mute_via_web_api_sets_volume_to_zero(win: FakeWinAudio) -> None
 def test_step_skill_says_what_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Los mensajes de error se separan a proposito: 'no encontré Spotify' es
     accionable, 'no pude cambiar el volumen' no dice donde mirar."""
-    monkeypatch.setattr(volume_module, "winaudio", FakeWinAudio(master=None, app=None))
+    monkeypatch.setattr(volume_module, "winaudio", FakeWinAudio(master=None))
     monkeypatch.setattr(volume_module, "press", lambda key: False)
-    controller = VolumeController(FakeSpotify(volume=None), PROCESOS)
+    controller = VolumeController(FakeSpotify(volume=None))
 
     pc = VolumeStepSkill(controller).execute(VolumeStepArgs(delta=10))
     musica = VolumeStepSkill(controller).execute(VolumeStepArgs(delta=10, target="spotify"))
@@ -293,7 +304,7 @@ def test_step_skill_says_what_failed(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_step_skill_prefers_an_explicit_level_over_the_step(win: FakeWinAudio) -> None:
     """"Sube el volumen al 50" gana `volume.up` en el router, no `volume.set`:
     el verbo pesa mas que el numero. La skill hace que esa duda no importe."""
-    skill = VolumeStepSkill(VolumeController(FakeSpotify(), PROCESOS))
+    skill = VolumeStepSkill(VolumeController(FakeSpotify()))
 
     assert skill.execute(VolumeStepArgs(delta=10, level="50")).ok is True
     assert win.master == 50  # fijado, no 40+10
@@ -306,7 +317,7 @@ def test_step_skill_falls_back_to_the_step_when_the_level_is_nonsense(
 ) -> None:
     """"Sube el volumen a tope" extrae algo que no es un numero. Mejor subir
     un paso que quedarse quieto: la intencion de subir estaba clara."""
-    skill = VolumeStepSkill(VolumeController(FakeSpotify(), PROCESOS))
+    skill = VolumeStepSkill(VolumeController(FakeSpotify()))
     assert skill.execute(VolumeStepArgs(delta=10, level="tope")).ok is True
     assert win.master == 50  # 40 + 10, el paso normal
 
@@ -314,28 +325,30 @@ def test_step_skill_falls_back_to_the_step_when_the_level_is_nonsense(
 def test_step_skill_says_when_it_is_already_at_the_limit(win: FakeWinAudio) -> None:
     """Spotify al 100% y "súbele" no hace nada. El silencio ahi es
     indistinguible de que no te hubiera entendido."""
-    win.app = 100
-    skill = VolumeStepSkill(VolumeController(FakeSpotify(), PROCESOS))
+    skill = VolumeStepSkill(VolumeController(FakeSpotify(volume=100)))
 
     result = skill.execute(VolumeStepArgs(delta=10, target="spotify"))
     assert result.ok is True
     assert result.speech == "Spotify ya está al máximo."
 
 
-def test_step_reports_the_mechanism_it_used(win: FakeWinAudio) -> None:
+def test_step_reports_the_mechanism_it_used(
+    win: FakeWinAudio, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`via` existe para poder depurar "el volumen no funciona" leyendo el log
-    en vez de probando los cuatro mecanismos a ciegas."""
-    controller = VolumeController(FakeSpotify(), PROCESOS)
+    en vez de probando los mecanismos a ciegas."""
+    controller = VolumeController(FakeSpotify())
     assert controller.step(VolumeTarget.SYSTEM, 10).via == "api-maestra"
-    assert controller.step(VolumeTarget.SPOTIFY, -10).via == "mezclador"
-
-    win.app = None
     assert controller.step(VolumeTarget.SPOTIFY, -10).via == "spotify-api"
+
+    monkeypatch.setattr(volume_module, "winaudio", FakeWinAudio(master=None))
+    monkeypatch.setattr(volume_module, "press", lambda key: True)
+    assert controller.step(VolumeTarget.SYSTEM, 10).via.startswith("teclas")
 
 
 def test_set_skill_accepts_numbers_in_words(win: FakeWinAudio) -> None:
     """Whisper devuelve "cuarenta" tanto como "40"; la skill coacciona ambos."""
-    skill = VolumeSetSkill(VolumeController(FakeSpotify(), PROCESOS))
+    skill = VolumeSetSkill(VolumeController(FakeSpotify()))
 
     assert skill.execute(VolumeSetArgs(level="cuarenta")).ok is True
     assert win.master == 40
@@ -344,16 +357,18 @@ def test_set_skill_accepts_numbers_in_words(win: FakeWinAudio) -> None:
 
 
 def test_set_skill_routes_to_spotify_with_target(win: FakeWinAudio) -> None:
-    skill = VolumeSetSkill(VolumeController(FakeSpotify(), PROCESOS))
+    spotify = FakeSpotify(volume=80)
+    skill = VolumeSetSkill(VolumeController(spotify))
+
     assert skill.execute(VolumeSetArgs(level="treinta", target="la musica")).ok is True
-    assert win.app == 30
+    assert spotify.writes == [30]
     assert win.master == 40  # el del PC no se toca
 
 
 def test_set_skill_rejects_unparseable_level(win: FakeWinAudio) -> None:
     """'pon el volumen a la mitad' llega hasta aqui; mejor decirlo que inventar
     un numero."""
-    skill = VolumeSetSkill(VolumeController(FakeSpotify(), PROCESOS))
+    skill = VolumeSetSkill(VolumeController(FakeSpotify()))
     result = skill.execute(VolumeSetArgs(level="la mitad"))
     assert result.ok is False
     assert win.master == 40
@@ -362,8 +377,8 @@ def test_set_skill_rejects_unparseable_level(win: FakeWinAudio) -> None:
 def test_mute_skill_targets_only_spotify(win: FakeWinAudio) -> None:
     """Silenciar Spotify no debe silenciar el PC entero: es justo la diferencia
     que motiva todo este modulo."""
-    MuteSkill(VolumeController(FakeSpotify(), PROCESOS)).execute(
-        volume_module.VolumeMuteArgs(target="spotify")
-    )
-    assert win.app_mute is True
+    spotify = FakeSpotify(volume=70)
+    MuteSkill(VolumeController(spotify)).execute(volume_module.VolumeMuteArgs(target="spotify"))
+
+    assert spotify.writes == [0]
     assert win.master_mute is False
