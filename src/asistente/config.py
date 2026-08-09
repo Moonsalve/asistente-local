@@ -84,6 +84,18 @@ class VadConfig(BaseModel):
     #: primera silaba.
     preroll_s: float = Field(default=0.3, ge=0.0)
 
+    #: Voz acumulada minima para que la grabacion merezca un STT. Un ventilador
+    #: que roza `speech_threshold` produce grabaciones largas con casi nada de
+    #: voz dentro; esto las descarta por unos microsegundos en vez de por los
+    #: ~120 ms que cuesta Whisper.
+    #:
+    #: No subir mucho: "no" o "pausa" duran poco mas de 0.2 s.
+    min_speech_s: float = Field(default=0.25, ge=0.0)
+    #: SNR minima estimada de la grabacion, en dB. Por debajo, la voz no destaca
+    #: sobre el fondo lo suficiente para transcribirse bien, y lo que sale es
+    #: una alucinacion. 0 desactiva la comprobacion.
+    min_snr_db: float = Field(default=6.0, ge=0.0)
+
 
 class SttConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -106,6 +118,66 @@ class SttConfig(BaseModel):
     normalize_audio: bool = True
     #: Pico objetivo. 0.95 y no 1.0 para dejar margen y no recortar.
     normalize_peak: float = Field(default=0.95, gt=0.0, le=1.0)
+
+    #: Resta espectral del ruido estacionario (ventilador, aire, zumbido) antes
+    #: de transcribir. Ver `audio/denoise.py`.
+    #:
+    #: LO QUE ESTA MEDIDO (12 clips de voz sintetica + ruido simulado, Whisper
+    #: small en CPU, que es un banco mas duro que una habitacion real):
+    #:   - ruido de ventilador a  5 dB SNR: WER 97.9% -> 72.9%   mejora clara
+    #:   - ruido de ventilador a 10 dB SNR: WER 66.0% -> 68.1%   igual
+    #:   - sobre audio limpio: cambia el RMS en 2e-8, o sea nada
+    #: Ayuda cuando hace falta y no estorba cuando no.
+    denoise: bool = True
+    #: Sobre-resta. Por encima de 1 se quita mas ruido del estimado, porque el
+    #: percentil se queda corto. Pasarse abre agujeros en la voz.
+    #:
+    #: OJO: el barrido de este par de valores salio INCONCLUSO. Con 6 clips y un
+    #: WER base del 80%, las diferencias entre configuraciones caian dentro de
+    #: la varianza de la medida. Estos valores son un termino medio prudente, no
+    #: un optimo: el unico barrido que vale es el que se haga en el PC, con el
+    #: ventilador de verdad y con large-v3-turbo.
+    denoise_strength: float = Field(default=1.5, ge=1.0, le=4.0)
+    #: Atenuacion maxima por banda (0.15 = -16 dB). NO bajar a 0: los silencios
+    #: absolutos son justo lo que dispara las alucinaciones de Whisper. Se elige
+    #: 0.15 y no 0.05 -que midio algo mejor, dentro del ruido- porque el fallo
+    #: que evita es el caro: alucinar produce una accion equivocada, no oir solo
+    #: obliga a repetir.
+    denoise_floor: float = Field(default=0.15, ge=0.01, le=1.0)
+
+    #: Umbrales propios de Whisper para descartar lo que no es voz. Sin ellos su
+    #: juicio se ignora y el ruido acaba convertido en texto con toda seguridad.
+    #: Subir `no_speech` filtra mas; bajar `log_prob` filtra mas.
+    no_speech_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    log_prob_threshold: float = -1.0
+
+
+class SpeakerConfig(BaseModel):
+    """Verificacion de locutor: responder solo a la voz enrolada.
+
+    VIENE DESACTIVADA, y no por prudencia generica: esta MEDIDO que es la mas
+    fragil de las tres defensas contra el ruido. Con ruido de ventilador el
+    coseno de la propia voz baja de ~0.80 a 0.49-0.83 segun la voz, y con ruido
+    de banda ancha se hunde a 0.29-0.44, que es territorio de "otra persona".
+    O sea: falla precisamente cuando hay ruido, que es cuando se necesitaria.
+
+    Contra el ventilador ya estan el denoise y las puertas del VAD, que son mas
+    baratos y mas fiables. Esto solo aporta contra el ruido que HABLA -la tele,
+    la musica cantada, otra persona-, y ahi si es la unica defensa que existe.
+
+    Actívala con `python scripts/enroll_voice.py` y ajusta el umbral con los
+    cosenos que el log imprime en cada turno, no a ojo.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    #: Fichero con el centroide de la voz. Lo genera `scripts/enroll_voice.py`.
+    profile: Path = Path("voz.json")
+    #: TUNING. Coseno minimo para aceptar la frase. Deliberadamente permisivo:
+    #: un falso negativo deja el asistente sordo sin decir por que, que es mucho
+    #: peor que atender de mas.
+    threshold: float = Field(default=0.45, ge=-1.0, le=1.0)
 
 
 class RouterConfig(BaseModel):
@@ -232,6 +304,7 @@ class Config(BaseModel):
     wake_word: WakeWordConfig = WakeWordConfig()
     vad: VadConfig = VadConfig()
     stt: SttConfig = SttConfig()
+    speaker: SpeakerConfig = SpeakerConfig()
     router: RouterConfig = RouterConfig()
     llm: LlmConfig = LlmConfig()
     tts: TtsConfig = TtsConfig()

@@ -24,6 +24,10 @@ dependencies = [
     "piper-tts>=1.2",
     # LLM fallback
     "ollama>=0.3",
+    # Verificacion de locutor: fbank de Kaldi en C++, sin arrastrar torch.
+    # Una implementacion casera en numpy no falla, produce embeddings plausibles
+    # que no discriminan, y el sintoma seria "a veces no me reconoce".
+    "kaldi-native-fbank>=1.20",
     # Skills
     "spotipy>=2.24",
     # Control de sistema (solo Windows)

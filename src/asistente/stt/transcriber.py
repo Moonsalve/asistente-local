@@ -26,6 +26,7 @@ from time import perf_counter
 
 import numpy as np
 
+from asistente.audio.denoise import denoise
 from asistente.config import SttConfig
 from asistente.cuda_setup import ensure_cuda_dlls
 
@@ -45,6 +46,45 @@ _CPU_COMPUTE_TYPE = "int8"
 #: Por debajo de este pico, la grabacion es practicamente silencio y escalarla
 #: solo amplificaria el ruido hasta hacerlo sonar como voz.
 _MIN_PEAK_TO_NORMALIZE = 1e-4
+
+#: Frases que Whisper INVENTA cuando solo oye ruido.
+#:
+#: No son transcripciones fallidas: son texto aprendido de los subtitulos con
+#: los que se entreno, que emite con toda confianza cuando no hay nada que
+#: transcribir. El repertorio en espanol es corto y muy reconocible, asi que una
+#: lista cerrada lo elimina sin riesgo de tragarse un comando real -nadie le
+#: dice "suscribete al canal" a un asistente de voz-.
+#:
+#: Se comparan normalizadas y por inclusion, porque Whisper varia la puntuacion
+#: y a veces las repite.
+_HALLUCINATIONS = (
+    "subtitulos realizados por la comunidad de amara.org",
+    "subtitulado por la comunidad de amara.org",
+    "subtitulos por la comunidad de amara.org",
+    "mas informacion en www.alimmenta.com",
+    "gracias por ver el video",
+    "gracias por ver este video",
+    "suscribete al canal",
+    "no olvides suscribirte",
+    "hasta la proxima",
+    "amara.org",
+    "www.",
+)
+
+
+def _normalize_for_match(text: str) -> str:
+    import unicodedata
+
+    lowered = unicodedata.normalize("NFD", text.lower())
+    return "".join(c for c in lowered if unicodedata.category(c) != "Mn")
+
+
+def is_hallucination(text: str) -> bool:
+    """True si el texto es de los que Whisper se inventa sobre ruido."""
+    if not text:
+        return False
+    normalized = _normalize_for_match(text)
+    return any(marker in normalized for marker in _HALLUCINATIONS)
 
 
 def normalize_peak(audio: np.ndarray, target: float = 0.95) -> np.ndarray:
@@ -125,6 +165,15 @@ class Transcriber:
         if audio.size < MIN_AUDIO_S * sample_rate:
             return ""
 
+        if self._config.denoise:
+            # ANTES de normalizar: normalizar primero fijaria el pico usando un
+            # transitorio de ruido, y la voz quedaria mas baja de lo debido.
+            audio = denoise(
+                audio,
+                strength=self._config.denoise_strength,
+                floor=self._config.denoise_floor,
+            )
+
         if self._config.normalize_audio:
             audio = normalize_peak(audio, self._config.normalize_peak)
 
@@ -134,5 +183,16 @@ class Transcriber:
             beam_size=self._config.beam_size,
             condition_on_previous_text=self._config.condition_on_previous_text,
             vad_filter=False,
+            # Whisper marca cada segmento con su probabilidad de "aqui no habla
+            # nadie" y con la verosimilitud media de lo que emitio. Sin estos
+            # dos umbrales, ese juicio se descarta y el ruido acaba convertido
+            # en texto con toda seguridad.
+            no_speech_threshold=self._config.no_speech_threshold,
+            log_prob_threshold=self._config.log_prob_threshold,
         )
-        return " ".join(segment.text.strip() for segment in segments).strip()
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+
+        if is_hallucination(text):
+            log.debug("descartada alucinacion de Whisper: %r", text)
+            return ""
+        return text

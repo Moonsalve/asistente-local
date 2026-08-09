@@ -131,6 +131,39 @@ def _run_text_mode(router: object, registry: object) -> int:
             print("  sin accion")
 
 
+def _build_speaker_gate(config: Config) -> object | None:
+    """Verificacion de locutor, o None si no esta activada o no se puede cargar.
+
+    Cualquier problema aqui degrada a "sin verificacion" y sigue. Es deliberado:
+    un perfil corrupto o un modelo que no descarga no pueden dejar el asistente
+    sordo — atender de mas es recuperable, no atender no se nota hasta que te
+    has cansado de repetir la orden.
+    """
+    if not config.speaker.enabled:
+        return None
+
+    from asistente.audio.speaker import SpeakerEmbedder, SpeakerGate, download_model
+
+    profile = Path(config.speaker.profile)
+    if not profile.is_file():
+        log.warning(
+            "speaker.enabled=true pero no existe %s. Ejecuta: "
+            "python scripts/enroll_voice.py    (se sigue sin verificar locutor)",
+            profile,
+        )
+        return None
+
+    try:
+        embedder = SpeakerEmbedder(download_model())
+        gate = SpeakerGate.from_profile(embedder, profile, config.speaker.threshold)
+    except Exception:
+        log.exception("no se pudo cargar la verificacion de locutor; se sigue sin ella")
+        return None
+
+    log.info("verificacion de locutor activa (umbral %.2f)", config.speaker.threshold)
+    return gate
+
+
 def _run_voice_mode(config: Config, router: object, registry: object) -> int:
     from asistente.audio.capture import MicrophoneStream
     from asistente.audio.keyphrase import KeyphraseGate
@@ -165,6 +198,7 @@ def _run_voice_mode(config: Config, router: object, registry: object) -> int:
         log.info("activacion por transcripcion: %s", " / ".join(config.wake_word.phrases))
 
     recorder = UtteranceRecorder(SileroVad(config.audio.sample_rate), config.vad, config.audio.sample_rate)
+    speaker_gate = _build_speaker_gate(config)
 
     with MicrophoneStream(
         sample_rate=config.audio.sample_rate,
@@ -182,6 +216,8 @@ def _run_voice_mode(config: Config, router: object, registry: object) -> int:
             speaker,
             wake_word=wake_word,
             keyphrase=keyphrase,
+            vad_config=config.vad,
+            speaker_gate=speaker_gate,
         )
         try:
             assistant.run_forever()

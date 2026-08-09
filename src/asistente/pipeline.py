@@ -16,10 +16,15 @@ import logging
 from dataclasses import dataclass, field
 from time import perf_counter
 
+import numpy as np
+
 from asistente.audio.capture import MicrophoneStream
+from asistente.audio.denoise import snr_db
 from asistente.audio.keyphrase import KeyphraseGate
-from asistente.audio.recorder import UtteranceRecorder
+from asistente.audio.recorder import Utterance, UtteranceRecorder
+from asistente.audio.speaker import SpeakerGate
 from asistente.audio.wakeword import WakeWordDetector
+from asistente.config import VadConfig
 from asistente.router.engine import Router
 from asistente.router.schema import Stage
 from asistente.skills.registry import SkillRegistry
@@ -69,6 +74,8 @@ class Assistant:
         speaker: Speaker,
         wake_word: WakeWordDetector | None = None,
         keyphrase: KeyphraseGate | None = None,
+        vad_config: VadConfig | None = None,
+        speaker_gate: SpeakerGate | None = None,
     ) -> None:
         if (wake_word is None) == (keyphrase is None):
             raise ValueError("hay que dar exactamente uno: wake_word o keyphrase")
@@ -80,7 +87,57 @@ class Assistant:
         self._router = router
         self._registry = registry
         self._speaker = speaker
+        self._vad_config = vad_config or VadConfig()
+        self._speaker_gate = speaker_gate
         self.metrics: list[TurnMetrics] = []
+
+    def _passes_noise_gates(self, utterance: Utterance) -> bool:
+        """Descarta ruido ANTES de gastar el STT.
+
+        El orden es por coste creciente, que es la misma idea que gobierna el
+        router de tres etapas: primero un contador que ya tenemos, luego una FFT
+        de unos milisegundos, y solo entonces los ~120 ms de Whisper.
+
+        Todo se registra a DEBUG con sus numeros: cuando el asistente "no oye",
+        arrancar con -v dice exactamente que puerta lo paro y por cuanto.
+        """
+        if utterance.speech_s < self._vad_config.min_speech_s:
+            log.debug(
+                "descartado: solo %.2f s de voz en %.2f s (minimo %.2f s)",
+                utterance.speech_s,
+                utterance.total_s,
+                self._vad_config.min_speech_s,
+            )
+            return False
+
+        if self._vad_config.min_snr_db > 0:
+            snr = snr_db(utterance.audio)
+            if snr < self._vad_config.min_snr_db:
+                log.debug(
+                    "descartado: SNR %.1f dB por debajo de %.1f dB",
+                    snr,
+                    self._vad_config.min_snr_db,
+                )
+                return False
+
+        return True
+
+    def _is_my_voice(self, audio: np.ndarray) -> bool:
+        """Verificacion de locutor, si esta activada.
+
+        Va antes del STT porque asi la voz de otra persona no llega a costar una
+        transcripcion. El coseno se registra SIEMPRE, tambien cuando acepta: es
+        el unico dato con el que ajustar el umbral sin adivinar.
+        """
+        if self._speaker_gate is None:
+            return True
+
+        verdict = self._speaker_gate.check(audio, self._mic.sample_rate)
+        if not verdict.accepted:
+            log.info("ignorado, no es tu voz: %s", verdict.reason)
+            return False
+        log.debug("locutor: %s", verdict.reason)
+        return True
 
     def run_forever(self) -> None:
         if self._keyphrase is not None:
@@ -118,12 +175,16 @@ class Assistant:
 
         while True:
             try:
-                audio = self._recorder.record(blocks, self._mic.preroll_audio())
-                if audio.size == 0:
+                utterance = self._recorder.record(blocks, self._mic.preroll_audio())
+                if utterance.empty:
+                    continue
+                if not self._passes_noise_gates(utterance):
+                    continue
+                if not self._is_my_voice(utterance.audio):
                     continue
 
                 started = perf_counter()
-                text = self._transcriber.transcribe(audio, self._mic.sample_rate)
+                text = self._transcriber.transcribe(utterance.audio, self._mic.sample_rate)
                 stt_s = perf_counter() - started
                 if not text:
                     continue
@@ -150,12 +211,18 @@ class Assistant:
                 log.exception("el turno fallo")
 
     def _handle_turn(self, blocks: object) -> None:
-        audio = self._recorder.record(blocks, self._mic.preroll_audio())
-        if audio.size == 0:
+        utterance = self._recorder.record(blocks, self._mic.preroll_audio())
+        if utterance.empty:
+            return
+
+        # Aqui NO se verifica el locutor: ya dijiste la palabra clave y el
+        # asistente esta esperando tu orden. Rechazarla ahora dejaria el turno
+        # colgado sin explicacion.
+        if not self._passes_noise_gates(utterance):
             return
 
         started = perf_counter()
-        text = self._transcriber.transcribe(audio, self._mic.sample_rate)
+        text = self._transcriber.transcribe(utterance.audio, self._mic.sample_rate)
         stt_s = perf_counter() - started
         if not text:
             return

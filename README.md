@@ -15,7 +15,7 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 3 etapas + skills | **Hecha y verificada** (203 tests) |
+| 2 | Router de 3 etapas + skills | **Hecha y verificada** (222 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 5 | Benchmark y tuning | Pendiente |
@@ -100,9 +100,10 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 203 tests, ~2 s
+PYTHONPATH=src pytest -q                           # 222 tests, ~2 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
 PYTHONPATH=src python scripts/diagnose_volume.py   # qué mecanismo de volumen falla
+PYTHONPATH=src python scripts/diagnose_noise.py    # ruido de la sala y umbrales
 ```
 
 `tests/test_router.py` mide el router contra frases que **no** están en
@@ -423,6 +424,72 @@ log cómo transcribió tu palabra clave, y podrás añadir esa forma a
 **Cuidado con las negaciones.** *"Me gusta esta canción"* (guardar) y *"no me
 gusta esta"* (siguiente) se diferencian en una palabra, y los embeddings manejan
 mal la negación. Si añades ejemplos a un intent con negación, revisa el opuesto.
+
+### Ruido de fondo: ventilador, música, la tele
+
+Empieza midiendo tu habitación en lugar de tocar valores a ciegas:
+
+```powershell
+python scripts/diagnose_noise.py
+```
+
+Graba 4 s de silencio y 4 s hablando, calcula la SNR real de tu sala y te dice
+qué números poner en `config.local.yaml`.
+
+Hay **tres defensas**, y actúan por orden de coste. Las dos primeras vienen
+activadas:
+
+| Defensa | Contra qué | Coste |
+|---|---|---|
+| Puertas del VAD (`min_speech_s`, `min_snr_db`) | picos sueltos que no son voz | microsegundos |
+| Supresión de ruido (`stt.denoise`) | ventilador, aire, zumbido | ~5 ms |
+| Verificación de locutor (`speaker.enabled`) | la tele, música cantada, otra persona | ~20 ms |
+
+**Lo que está medido** (12 clips, ruido simulado, Whisper `small` en CPU — un
+banco más duro que una habitación real):
+
+- Ventilador a **5 dB** de SNR: WER medio **97.9% → 72.9%**.
+- Ventilador a **10 dB**: 66.0% → 68.1%, o sea igual dentro del ruido de la medida.
+- Sobre audio limpio: cambia el RMS en 2e-8. No toca nada.
+
+Es decir: ayuda cuando hace falta y no estorba cuando no. El barrido de
+`denoise_strength` y `denoise_floor` salió **inconcluso** con esa muestra, así
+que los valores por defecto son un término medio prudente, no un óptimo. El
+barrido que vale es el que hagas en el PC con tu ventilador de verdad.
+
+Whisper además **inventa texto** cuando solo oye ruido — en español casi siempre
+"Subtítulos realizados por la comunidad de Amara.org" y parientes. Se filtran
+por lista cerrada, más los umbrales `no_speech_threshold` y `log_prob_threshold`
+del propio modelo.
+
+### Que solo te haga caso a ti
+
+```powershell
+python scripts/enroll_voice.py          # graba 6 frases y guarda tu perfil
+python scripts/enroll_voice.py --probar # comprobar cómo te puntúa
+```
+
+Al terminar te recomienda un umbral calculado con **tus** grabaciones. Actívalo
+en `config.local.yaml`:
+
+```yaml
+speaker:
+  enabled: true
+  threshold: 0.50     # el que te haya dicho el script
+```
+
+> **Viene desactivado, y por una razón medida.** Con ruido de ventilador el
+> coseno de tu propia voz baja de ~0.80 a 0.49–0.83, y con ruido de banda ancha
+> se hunde a 0.29–0.44 — territorio de "otra persona". Falla justo cuando haría
+> falta. Contra el ventilador funcionan mejor el denoise y las puertas del VAD,
+> que ya están activados. Esto sirve contra el ruido que **habla**.
+>
+> Enrola **en tu sitio y en tus condiciones**: el perfil recoge la sala y el
+> micrófono, no solo la voz. Si el ventilador suele estar encendido, déjalo
+> encendido al enrolar.
+>
+> Si el asistente deja de oírte, **baja el umbral** o pon `enabled: false`. Cada
+> turno registra el coseno en el log; ajusta con esos números, no a ojo.
 
 ### El micrófono capta muy bajo
 
