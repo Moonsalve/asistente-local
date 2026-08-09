@@ -28,6 +28,55 @@ from asistente.skills.volume import (
 PROCESOS = ("Spotify.exe",)
 
 
+# ------------------------------------------------- formas de la API de pycaw
+
+
+class _EndpointModerno:
+    """pycaw >= 20251023: `GetSpeakers()` devuelve un `AudioDevice` que ya trae
+    la interfaz hecha en `EndpointVolume`."""
+
+    def __init__(self) -> None:
+        self.EndpointVolume = "interfaz-lista"
+
+
+class _EndpointAntiguo:
+    """pycaw <= 20240210: devolvia el `IMMDevice` crudo, que hay que activar."""
+
+    def __init__(self) -> None:
+        self.activado = False
+
+    def Activate(self, iid: Any, clsctx: Any, params: Any) -> str:  # noqa: N802
+        self.activado = True
+        return "interfaz-cruda"
+
+
+class _IfaceFalsa:
+    _iid_ = "{fake}"
+
+
+def test_endpoint_acepta_la_forma_nueva_de_pycaw() -> None:
+    """La que rompio el volumen del PC: pycaw 20251023 devuelve un envoltorio
+    sin `Activate`, y el codigo lo llamaba igualmente."""
+    from asistente.skills.winaudio import endpoint_from_speakers
+
+    resultado = endpoint_from_speakers(
+        _EndpointModerno(), _IfaceFalsa, None, lambda x, t: x, lambda t: t
+    )
+    assert resultado == "interfaz-lista"
+
+
+def test_endpoint_sigue_aceptando_la_forma_antigua() -> None:
+    """El pyproject pide `pycaw>=20240210`, asi que la rama vieja sigue viva."""
+    from asistente.skills.winaudio import endpoint_from_speakers
+
+    speakers = _EndpointAntiguo()
+    resultado = endpoint_from_speakers(
+        speakers, _IfaceFalsa, None, lambda x, t: x, lambda t: t
+    )
+    assert speakers.activado is True
+    assert resultado == "interfaz-cruda"
+
+
 class FakeSpotify:
     """Cliente de Spotify de mentira. `volume` es None cuando no hay dispositivo
     activo, que es el caso real que obliga a degradar."""

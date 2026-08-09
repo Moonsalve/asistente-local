@@ -62,10 +62,13 @@ def check_send_input() -> bool:
 
 def check_master() -> bool:
     print("\n2. VOLUMEN MAESTRO DEL PC (IAudioEndpointVolume)")
+    print(f"      pycaw {winaudio.pycaw_version()}")
     current = winaudio.master_percent()
     if current is None:
         print(f"{MAL} no se pudo leer: {winaudio.last_error()}")
         print("      Sin esto el volumen solo se mueve a saltos de 2% con las teclas.")
+        print("      Si el error menciona 'AudioDevice' o 'Activate', pycaw ha")
+        print("      vuelto a cambiar la forma de GetSpeakers(): ver winaudio._master.")
         return False
     print(f"{OK} volumen actual: {current}%   silenciado: {winaudio.master_muted()}")
 

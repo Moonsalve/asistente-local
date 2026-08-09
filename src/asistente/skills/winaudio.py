@@ -62,6 +62,21 @@ def last_error() -> str | None:
     return _last_error
 
 
+def pycaw_version() -> str:
+    """Version instalada de pycaw, o por que no se pudo saber.
+
+    Se imprime en el diagnostico porque pycaw ha cambiado la forma de su API
+    entre versiones sin avisar (ver `_master`), y saber cual hay puesta ahorra
+    la mitad del trabajo cuando algo deja de funcionar de un dia para otro.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("pycaw")
+    except Exception as exc:
+        return f"desconocida ({exc})"
+
+
 def _fail(message: str, exc: Exception | None = None) -> None:
     global _last_error
     _last_error = f"{message}: {exc}" if exc else message
@@ -101,6 +116,34 @@ def _ensure_com() -> bool:
     return True
 
 
+def endpoint_from_speakers(
+    speakers: Any,
+    endpoint_iface: Any,
+    clsctx_all: Any,
+    cast: Any,
+    pointer: Any,
+) -> Any:
+    """Saca `IAudioEndpointVolume` de lo que sea que devuelva `GetSpeakers()`.
+
+    pycaw cambio la forma de esa llamada sobre la marcha: hasta 2024 devolvia el
+    `IMMDevice` crudo, que hay que activar a mano, y desde 20251023 devuelve un
+    envoltorio `AudioDevice` que ya expone la interfaz hecha. Se aceptan las dos
+    porque el pyproject solo pide `pycaw>=20240210` y una resolucion de version
+    distinta en el PC no puede dejar el volumen sin funcionar.
+
+    Sintoma de no contemplarlo, y motivo de que esta funcion exista:
+    `'AudioDevice' object has no attribute 'Activate'`, con el volumen del PC
+    degradado a las teclas multimedia sin mas aviso.
+
+    Las dependencias de COM llegan por parametro para poder testear la eleccion
+    de rama fuera de Windows, que es donde estuvo el fallo.
+    """
+    if hasattr(speakers, "EndpointVolume"):
+        return speakers.EndpointVolume
+    interface = speakers.Activate(endpoint_iface._iid_, clsctx_all, None)
+    return cast(interface, pointer(endpoint_iface))
+
+
 def _master() -> Any | None:
     """Interfaz `IAudioEndpointVolume` del dispositivo de salida por defecto."""
     global _endpoint
@@ -114,9 +157,13 @@ def _master() -> Any | None:
         from comtypes import CLSCTX_ALL
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-        speakers = AudioUtilities.GetSpeakers()
-        interface = speakers.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-        _endpoint = cast(interface, POINTER(IAudioEndpointVolume))
+        _endpoint = endpoint_from_speakers(
+            AudioUtilities.GetSpeakers(),
+            IAudioEndpointVolume,
+            CLSCTX_ALL,
+            cast,
+            POINTER,
+        )
     except ImportError as exc:
         _fail("falta pycaw/comtypes (pip install -e .)", exc)
         return None
