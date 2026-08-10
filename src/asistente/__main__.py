@@ -138,9 +138,8 @@ def _run_text_mode(router: object, registry: object) -> int:
 def _bias_stt_with_your_music(config: Config, transcriber: object, spotify: object | None) -> None:
     """Le pasa al STT los nombres de tu biblioteca de Spotify.
 
-    Es lo que arregla los titulos en ingles: medido, WER 39.6% -> 33.4% sin
-    coste de tiempo, mientras que subir `beam_size` no movia nada. Ver
-    `SttConfig.hotwords_from_spotify`.
+    Desactivado por defecto: con `large-v3-turbo` empeora la transcripcion. Ver
+    la tabla en `SttConfig.hotwords_from_spotify`.
 
     Cualquier problema aqui degrada a "sin sesgo" y sigue: el asistente tiene
     que arrancar aunque Spotify no responda.

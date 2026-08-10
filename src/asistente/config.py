@@ -109,32 +109,43 @@ class SttConfig(BaseModel):
     #:
     #: MEDIDO, y por eso sigue en 1: sobre 24 clips de titulos en ingles dichos
     #: en espanol -el caso que peor se transcribia- subirlo a 5 movio el WER de
-    #: 39.6% a 38.4%, o sea nada, a cambio de mas tiempo. Lo que si lo movio
-    #: fueron los `hotwords` (ver abajo). Cuando el modelo no sabe que una
-    #: secuencia existe, buscar mas caminos no la encuentra.
+    #: 22.4% a 21.6% con large-v3-turbo, o sea dentro del ruido, a cambio de un
+    #: 39% mas de tiempo. Con `small` daba lo mismo (39.6% -> 38.4%).
+    #:
+    #: Es la unica conclusion que aguanto con los dos modelos: subir el beam no
+    #: arregla los titulos que el modelo no conoce.
     beam_size: int = 1
 
-    #: Sesga el decodificador con los nombres de TU biblioteca de Spotify:
-    #: artistas primero y titulos despues. Es lo unico que hizo mejorar de
-    #: verdad la transcripcion de titulos en ingles.
+    #: Sesga el decodificador con los nombres de TU biblioteca de Spotify.
     #:
-    #: MEDIDO (24 clips, Whisper small en CPU, voces en espanol diciendo
-    #: titulos en ingles):
-    #:     sin hotwords, beam=1   WER 39.6%
-    #:     sin hotwords, beam=5   WER 38.4%
-    #:     con hotwords, beam=1   WER 33.4%   mismo coste que beam=1 a secas
-    #: Y en los titulos concretos no es una mejora de grado:
-    #:     "Lovin Machine"      -> "Loving Machine"
-    #:     "Ponlobes Rock"      -> "Pon Lovers Rock"
-    #:     "no-tinelsmatters"   -> "Nothing Else Matters"
+    #: DESACTIVADO POR UNA MEDIDA, y merece la pena contar la historia entera
+    #: porque el resultado se dio la vuelta al usar el modelo de verdad.
     #:
-    #: El problema no era que Whisper oyera mal, sino que "loving machine" no es
-    #: una secuencia probable en espanol y "lovin machine" si. Basta con decirle
-    #: que existe.
+    #: Con Whisper `small` (24 clips, voces ES diciendo titulos en ingles):
+    #:     beam=1              WER 39.6%
+    #:     beam=5              WER 38.4%
+    #:     beam=1 + hotwords   WER 33.4%   <- parecia la solucion
     #:
-    #: Ponlo en false si no usas Spotify o si notas que arrastra los comandos
-    #: normales hacia nombres propios.
-    hotwords_from_spotify: bool = True
+    #: Con `large-v3-turbo`, QUE ES EL QUE CORRE AQUI, los mismos 24 clips:
+    #:     beam=1              WER 22.4%   8/24 exactos
+    #:     beam=5              WER 21.6%   7/24
+    #:     beam=5 + hotwords   WER 24.1%   7/24
+    #:     beam=1 + hotwords   WER 24.8%   6/24   <- PEOR que sin nada
+    #:
+    #: Turbo ya acierta los titulos en ingles por su cuenta (la mitad del WER de
+    #: small), asi que el sesgo no tiene hueco donde ayudar y si donde estorbar.
+    #: Y el modo de fallo es el peor posible: PEGA EL VERBO AL TITULO
+    #: ("Ponlovers Rock de TV Girl"), con lo que la frase ya no casa con el
+    #: patron de spotify.play y el comando no llega ni a enrutarse. Tambien
+    #: convirtio un "de Metallica" correcto en ", The Metallica".
+    #:
+    #: Lo que si arregla el residuo -turbo escribe "TV Gery" por "TV Girl"- es
+    #: la busqueda en tus me gusta, que puntua ese par a 90.9 sobre un umbral de
+    #: 72. Ver `skills/spotify.py`.
+    #:
+    #: Se deja activable porque con otro modelo (small, medium) la tabla decia
+    #: lo contrario. Si lo activas, comprueba que no te parte los verbos.
+    hotwords_from_spotify: bool = False
     #: Cuantos terminos como maximo. Whisper acota el contexto del prompt a unos
     #: 224 tokens; pasarse de ahi no anade nada y empieza a desplazar al audio.
     hotwords_limit: int = Field(default=60, ge=0, le=200)

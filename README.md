@@ -267,12 +267,16 @@ catálogo público. Además de ser lo que sueles querer, es donde se absorben lo
 títulos que Whisper transcribe mal: contra unos cientos de canciones tuyas, un
 emparejamiento difuso acierta donde la Web API no encontraría nada.
 
-**Los títulos en inglés.** Dichos en español salían como *"Lovin Machine"* o
-*"Ponlobes Rock"*, y así no hay búsqueda que valga. Al arrancar, el asistente le
-pasa a Whisper los nombres de **tu** biblioteca (artistas y títulos) para sesgar
-la transcripción, y con eso salen exactos. Medido: WER 39.6% → 33.4% sin coste
-de tiempo; subir `beam_size` no servía de nada (39.6% → 38.4%). Se desactiva con
-`stt: {hotwords_from_spotify: false}` en `config.local.yaml`.
+**Los títulos en inglés** dichos en español se transcriben como suenan
+(*"TV Gery"* por *"TV Girl"*), y ahí es donde entra la búsqueda en tu
+biblioteca: ese par puntúa 90.9 sobre un umbral de 72.
+
+Se probó además sesgar a Whisper con los nombres de tu biblioteca
+(`stt.hotwords_from_spotify`) y **viene desactivado porque con `large-v3-turbo`
+empeora**: WER 22.4% → 24.8%, y llega a pegar el verbo al título
+(*"Ponlovers Rock"*), con lo que el comando ni se enruta. Con `small` mejoraba
+mucho, así que la opción sigue ahí para quien use otro modelo. Subir
+`beam_size` no ayuda con ninguno de los dos.
 
 **Si no encuentra lo que pediste, lo dice.** Antes se quedaba con el primer
 resultado de la búsqueda, y como `search()` siempre devuelve algo, pedir *"loving

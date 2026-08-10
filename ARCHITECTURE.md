@@ -181,8 +181,8 @@ Dichos por un hispanohablante, Whisper los transcribe como suenan: *"Lovin
 Machine"*, *"Ponlobes Rock"*, *"no-tinelsmatters de metálica"*. Con eso la Web
 API no encuentra nada, porque no es así como están escritos.
 
-Medido sobre 24 clips (`say` en voces ES diciendo títulos en inglés, Whisper
-small en CPU):
+Medido sobre 24 clips (`say` en voces ES diciendo títulos en inglés), primero
+con Whisper `small` en CPU:
 
 | Configuración | WER | Coste |
 |---|---|---|
@@ -191,21 +191,31 @@ small en CPU):
 | `beam_size=1` + hotwords | **33.4%** | igual que beam=1 |
 | `beam_size=5` + hotwords | 27.9% | +68% |
 
-**Subir `beam_size` no sirve.** Cuando el modelo no sabe que una secuencia
-existe, buscar más caminos no la encuentra: *"loving machine"* no es probable en
-español y *"lovin machine"* sí. Lo que sí funciona es **decírselo**, y en los
-títulos concretos la diferencia no es de grado:
+Parecía concluyente: los `hotwords` —los nombres de su propia biblioteca de
+Spotify— arreglaban los títulos y `beam_size` no hacía nada. **Y con el modelo
+real se dio la vuelta.** Los mismos 24 clips con `large-v3-turbo`:
 
-```
-"Lovin Machine"                 -> "Loving Machine"
-"Ponlobes Rock"                 -> "Pon Lovers Rock"
-"no-tinelsmatters de metálica"  -> "Nothing Else Matters de Metallica"
-```
+| Configuración | WER | Exactos |
+|---|---|---|
+| `beam_size=1` | **22.4%** | 8/24 |
+| `beam_size=5` | 21.6% | 7/24 |
+| `beam_size=5` + hotwords | 24.1% | 7/24 |
+| `beam_size=1` + hotwords | 24.8% | 6/24 |
 
-Los `hotwords` salen de **su propia biblioteca de Spotify**: artistas primero
-(se repiten —veinte canciones de un grupo son un solo término— y son el ancla
-que arrastra al resto de la frase) y luego títulos, hasta 60 términos, porque
-Whisper acota el contexto del prompt a ~224 tokens.
+Turbo ya acierta los títulos en inglés por su cuenta —la mitad del WER de
+`small`—, así que el sesgo no tiene hueco donde ayudar y sí donde estorbar. Y su
+modo de fallo es el peor posible: **pega el verbo al título** (*"Ponlovers Rock
+de TV Girl"*), con lo que la frase ya no casa con el patrón de `spotify.play` y
+el comando no llega ni a enrutarse. También convirtió un *"de Metallica"*
+correcto en *", The Metallica"*.
+
+Así que los hotwords vienen **desactivados**, con la opción disponible para
+quien use otro modelo. Lo único que aguanta con los dos modelos es que **subir
+`beam_size` no arregla los títulos que el modelo no conoce**: 22.4% → 21.6% es
+ruido, y cuesta un 39% más de tiempo.
+
+Lo que sí absorbe el residuo de turbo (*"TV Gery"* por *"TV Girl"*) es la
+búsqueda en la biblioteca: ese par puntúa 90.9 sobre un umbral de 72.
 
 ### Y la segunda red: buscar primero en tu biblioteca
 

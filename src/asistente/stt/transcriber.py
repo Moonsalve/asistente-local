@@ -120,11 +120,11 @@ class Transcriber:
         biblioteca de Spotify del usuario, y el STT no tiene por que saber que
         Spotify existe.
 
-        Es LO QUE ARREGLA los titulos en ingles. Medido sobre 24 clips de
-        titulos en ingles dichos por voces en espanol (Whisper small, CPU):
-        WER 39.6% -> 33.4% sin coste de tiempo, mientras que subir `beam_size`
-        de 1 a 5 solo lo movia a 38.4%. Cuando el modelo no sabe que una
-        secuencia existe, buscar mas caminos no la encuentra; decirsela, si.
+        VIENE DESACTIVADO: medido con `large-v3-turbo` empeora (WER 22.4% ->
+        24.8%) y llega a pegar el verbo al titulo ("Ponlovers Rock"), con lo que
+        la frase ni siquiera se enruta. Con `small` mejoraba mucho (39.6% ->
+        33.4%), asi que la opcion se queda para quien use otro modelo. La tabla
+        entera esta en `SttConfig.hotwords_from_spotify`.
         """
         self._hotwords = terms.strip() or None
         if self._hotwords:
