@@ -129,19 +129,91 @@ intents:
       - quiero escuchar a los beatles
       - ponme el album de daft punk
       - reproduce la cancion bohemian rhapsody
-      - pon mis canciones favoritas
       - pon la lista de reproduccion de entrenamiento
+      - pon mi playlist de entrenamiento
+      # "reproduce la playlist de X" con un nombre cualquiera se fue a
+      # spotify.liked (0.490) en cuanto ese intent aprendio "pon la playlist de
+      # mis me gusta": el molde "playlist de ..." quedo asociado a los me gusta.
+      # Es el mismo efecto que documenta la nota de "silencia spotify" en
+      # volume.mute — un intent nuevo se lleva un molde entero— y se arregla
+      # igual, anclando el otro lado con nombres corrientes de playlist.
+      - reproduce la playlist de fiesta
+      - pon la playlist de correr
+      - pon la playlist de concentracion
       # "pon musica de los 80" empataba con media.play_pause (0.893 vs 0.892).
       # Se ancla solo la forma en letra: la variante con digitos la cubre el
       # encoder por generalizacion, y asi el test la sigue midiendo de verdad.
       - pon musica de los ochenta
       - ponme reggaeton
+      # CANCION + ARTISTA. Sin estas anclas la forma se desmoronaba de maneras
+      # muy distintas segun el titulo: "pon la cancion despacito de luis fonsi"
+      # caia en media.play_pause (0.372) y "ponme la cancion enter sandman de
+      # metallica" en spotify.like (0.333). El patron sintactico "pon la cancion
+      # X de Y" tiene que estar anclado con nombres propios de verdad, porque lo
+      # que el encoder ve de un titulo desconocido es casi ruido: lo unico
+      # estable de la frase es el molde.
+      #
+      # Hacen falta MUCHAS y en los dos idiomas: con solo tres, "pon la cancion
+      # labios compartidos de mana" ganaba a spotify.like por 0.012, y perder
+      # ahi no es un "no entiendo" sino guardar en favoritos la cancion que ya
+      # sonaba. Con nueve, el margen mas estrecho medido sobre titulos que NO
+      # estan aqui sube a 0.071.
+      - pon la cancion bohemian rhapsody de queen
+      - ponme la cancion smells like teen spirit de nirvana
+      - reproduce la cancion hotel california de los eagles
+      - pon el tema imagine de john lennon
+      - quiero escuchar la cancion vivir mi vida de marc anthony
+      - pon la cancion la camisa negra de juanes
+      - ponme el tema wonderwall de oasis
+      - reproduce la cancion color esperanza de diego torres
+      - pon la rola oye como va de santana
     slot_patterns:
-      # "pon la playlist de rock" -> query="rock", tipo=playlist
-      - '^(?:pon|ponme|reproduce|pone)\s+(?:me\s+)?(?:la|el|las|los|un|una|mi|mis)?\s*(?:lista\s+de\s+reproduccion|playlist|album|disco|cancion|tema|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
-      # "quiero escuchar a los beatles" -> query="los beatles"
+      # PRIMERO el patron con artista: `extract_slots` acumula y para cada clave
+      # manda el primer patron que la rellena, asi que este tiene que ver la
+      # frase antes que el generico, que se llevaria "X de Y" entero como query.
+      #
+      # `query` es GREEDY y `artist` perezoso: la frase se parte por el ULTIMO
+      # "de". En espanol los titulos llevan "de" a menudo ("el dia que me
+      # quieras de gardel") y los nombres de grupo casi nunca, asi que partir
+      # por el ultimo acierta mucho mas veces que partir por el primero.
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|quiero\s+escuchar|escuchar)\s+(?:me\s+)?(?:la|el|una|un)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
+      # "pon la playlist de rock" -> kind="playlist", query="rock".
+      # `kind` viaja como la palabra que se dijo; la skill la traduce al tipo de
+      # la Web API y lo que no reconoce lo deja en None (busqueda en cascada).
+      # Por eso "musica" puede estar en la lista sin significar nada.
+      - '^(?:pon|ponme|reproduce|pone)\s+(?:me\s+)?(?:la|el|las|los|un|una|mi|mis)?\s*(?P<kind>lista\s+de\s+reproduccion|playlist|album|disco|cancion|tema|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
+      # "quiero escuchar a los beatles" -> query="los beatles". Es tambien la
+      # red de seguridad de "pon despacito de luis fonsi", sin la palabra
+      # "cancion": ahi el artista no se separa y se busca "despacito de luis
+      # fonsi" en texto libre, que Spotify resuelve bien.
       - '^(?:quiero\s+escuchar|escuchar|pon|ponme|reproduce)\s+(?:a\s+|algo\s+de\s+|musica\s+de\s+)?(?P<query>.+?)\s*$'
     slots_required: true
+    confirmation: null
+
+  # Tus Me Gusta no son una playlist y no se pueden buscar: ver skills/spotify.py.
+  #
+  # OJO CON LA NEGACION AL REVES: este intent ("pon mis me gusta", reproducir la
+  # coleccion) y spotify.like ("me gusta esta cancion", guardar la actual)
+  # comparten las palabras que mas pesan y significan cosas opuestas -uno lee la
+  # lista, el otro escribe en ella-. Los dos necesitan anclas abundantes; al
+  # tocar cualquiera de las dos listas hay que medir la otra.
+  spotify.liked:
+    tool: spotify.liked
+    literal:
+      - pon mis me gusta
+      - reproduce mis me gusta
+    examples:
+      - pon mis me gusta
+      - reproduce mis me gusta
+      - pon la playlist de mis me gusta
+      - pon la lista de mis me gusta
+      - pon mis canciones favoritas
+      - reproduce mis canciones favoritas
+      - pon las canciones que me gustan
+      - pon mis canciones guardadas
+      - reproduce mi musica guardada
+      - pon mis likes
+      - pon mis favoritas
     confirmation: null
 
   # -------------------------------------------------------------------- volumen
@@ -347,8 +419,11 @@ intents:
       - mata spotify
       - cierra la aplicacion de spotify
     slot_patterns:
-      - '^(?:cierra|cerrar|cierrame|mata|matar|termina|terminar|finaliza)\s+(?:me\s+)?(?:el|la|los|las)?\s*(?:proceso\s+de\s+|aplicacion\s+|app\s+|programa\s+)?(?P<app>.+?)\s*$'
-      - '^(?:quiero\s+)?cerrar\s+(?:el|la)?\s*(?P<app>.+?)\s*$'
+      # El `(?:de\s+)?` detras del sustantivo no es opcional por gusto: sin el,
+      # "cierra la aplicacion DE spotify" entregaba app="de spotify", que solo
+      # se resolvia por accidente porque el matching difuso lo perdona.
+      - '^(?:cierra|cerrar|cierrame|mata|matar|termina|terminar|finaliza)\s+(?:me\s+)?(?:el|la|los|las)?\s*(?:(?:proceso|aplicacion|app|programa|ventana)\s+(?:de\s+)?)?(?P<app>.+?)\s*$'
+      - '^(?:quiero\s+)?cerrar\s+(?:el|la)?\s*(?:(?:aplicacion|app|programa)\s+(?:de\s+)?)?(?P<app>.+?)\s*$'
     slots_required: true
     confirmation: null
 

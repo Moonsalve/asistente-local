@@ -21,7 +21,11 @@ ORDEN DE RESOLUCION
     2. PATH (`shutil.which`), para lo que si esta ahi: code, python...
     3. App Paths del registro, primero HKCU (instalaciones por usuario, que es
        como se instala Spotify) y luego HKLM.
-    4. Ultimo recurso: `start ""`, que resuelve los alias de las apps de la
+    4. Carpetas donde los instaladores dejan las cosas (`%APPDATA%\\Spotify\\
+       Spotify.exe` y companiaa). Hace falta porque App Paths NO es obligatorio:
+       hay instaladores que no escriben la clave y actualizaciones que la dejan
+       apuntando a una version vieja que ya no existe.
+    5. Ultimo recurso: `start ""`, que resuelve los alias de las apps de la
        Microsoft Store.
 
 Devolver la ruta resuelta en vez de tirar de shell tiene otra ventaja: se lanza
@@ -52,9 +56,11 @@ def resolve_executable(command: str) -> Path | None:
     if (found := shutil.which(command)) is not None:
         return Path(found)
 
-    if sys.platform == "win32":
-        return _lookup_app_paths(command)
-    return None
+    if sys.platform != "win32":
+        return None
+    if (registrado := _lookup_app_paths(command)) is not None:
+        return registrado
+    return _lookup_well_known(command)
 
 
 def _lookup_app_paths(command: str) -> Path | None:
@@ -77,8 +83,65 @@ def _lookup_app_paths(command: str) -> Path | None:
     return None
 
 
+#: Donde acaban los programas cuando el registro no sabe nada de ellos. El
+#: orden va de la instalacion por usuario -que es la habitual hoy y la que usa
+#: Spotify- hacia las de sistema.
+_WELL_KNOWN_ROOTS = (
+    r"%APPDATA%",
+    r"%LOCALAPPDATA%\Programs",
+    r"%LOCALAPPDATA%",
+    r"%ProgramFiles%",
+    r"%ProgramFiles(x86)%",
+)
+
+
+def _lookup_well_known(command: str) -> Path | None:
+    """Busca `<command>.exe` en las carpetas habituales de instalacion.
+
+    Solo dos formas y sin recursion: `<raiz>\\<nombre>.exe` y
+    `<raiz>\\<nombre>\\<nombre>.exe`. Basta para el caso que motiva esto
+    -`%APPDATA%\\Spotify\\Spotify.exe`- y evita recorrer medio disco en la ruta
+    critica de un comando de voz. Lo que no encaje en ese molde se pone a mano
+    en `config.local.yaml`, que para eso existe.
+    """
+    import os
+
+    nombre = command[: -len(".exe")] if command.lower().endswith(".exe") else command
+    if not nombre or any(sep in nombre for sep in "\\/"):
+        return None
+
+    for raiz in _WELL_KNOWN_ROOTS:
+        base = Path(os.path.expandvars(raiz))
+        if "%" in str(base):  # la variable no estaba definida
+            continue
+        for candidato in (base / f"{nombre}.exe", base / nombre / f"{nombre}.exe"):
+            try:
+                if candidato.is_file():
+                    log.debug("%r encontrado fuera del registro: %s", command, candidato)
+                    return candidato
+            except OSError:
+                continue
+    return None
+
+
 #: Prefijo con el que Windows identifica las apps de la Microsoft Store.
 APPS_FOLDER = "shell:AppsFolder\\"
+
+
+def can_launch(command: str) -> bool:
+    """Si este comando se puede lanzar en ESTA maquina, sin lanzarlo.
+
+    Lo usan el descubrimiento -para reparar entradas de la config que apuntan a
+    algo que no existe- y `scripts/diagnose_apps.py`. Reconoce las cuatro
+    formas que admite `launch()`, no solo los ejecutables: para un .lnk la
+    pregunta es si el fichero esta, y para un AppsFolder o una URI no hay nada
+    que comprobar sin efectos secundarios, asi que se dan por buenos.
+    """
+    if command.startswith(APPS_FOLDER) or "://" in command:
+        return True
+    if command.lower().endswith(".lnk"):
+        return Path(command).is_file()
+    return resolve_executable(command) is not None
 
 
 def launch(command: str) -> bool:

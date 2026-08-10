@@ -173,6 +173,75 @@ regex independientes —*"pon el volumen de spotify al 45"* necesita uno para el
 nivel y otro para el destino— sin cambiar el comportamiento donde varios
 patrones son alternativas del mismo argumento.
 
+### Cerrar una app: el proceso se busca, no se deduce
+
+`app.close` mataba `<spec.process>.exe`, y ese campo es opcional y a menudo
+falso. Tres formas de fallar, las tres en silencio:
+
+- las apps de la Microsoft Store llegan del descubrimiento con `process=None`
+  (no hay forma de sacarlo del AppID) y la skill se rendía antes de intentarlo,
+  aunque casi todas corren como un `.exe` normal y visible;
+- los `.lnk` del menú Inicio traen un nombre **adivinado** pegando el título
+  ("Visual Studio Code" → `VisualStudioCode.exe`, que no existe: es `Code.exe`);
+- cuando `taskkill` fallaba, su mensaje se tiraba y el usuario oía siempre "no
+  estaba abierto", tanto si no lo estaba como si el nombre era incorrecto o el
+  sistema denegaba el permiso.
+
+Ahora se construye una lista de nombres plausibles a partir de la entrada de la
+allowlist —`process`, comando, clave y alias— y se **cruza con los procesos
+vivos** (`tasklist`). Se mata un nombre que existe, y si no hay coincidencia se
+dice que no está abierto, que es una frase distinta y accionable.
+
+La comparación es exacta salvo mayúsculas y extensión, **sin matching difuso**:
+un acierto de más aquí no abre una ventana equivocada, mata un proceso ajeno.
+`Steam` contra `SteamService` está lo bastante cerca como para que cualquier
+umbral difuso acabe costando trabajo sin guardar.
+
+La frontera de seguridad no cambia: todos los candidatos salen de la config,
+nunca del texto transcrito. Lo hablado solo elige **qué entrada** se usa.
+
+### La precedencia de la config cede cuando la config no funciona
+
+Lo declarado a mano en `apps:` gana sobre lo descubierto, con una excepción: si
+el comando escrito a mano **no se puede lanzar en esta máquina**, se sustituye
+por el descubierto y se avisa por log.
+
+La precedencia existe para respetar una decisión deliberada, no para defender un
+valor que no funciona. El caso se dio: `config.yaml` trae
+`spotify: {command: spotify}`, que depende de que Spotify registre su clave en
+App Paths. Cuando no lo hace —o la instalación es de la Store— *"abre spotify"*
+no encontraba nada, mientras el descubrimiento tenía el AppID correcto y lo
+estaba tirando por ser "menos prioritario".
+
+Solo se reemplaza el comando: los alias y el nombre de proceso escritos a mano
+se conservan, porque son mejores que los deducidos.
+
+### Spotify: hay dos cosas tuyas que la búsqueda pública no ve
+
+`search()` mira el catálogo público, y ahí no está ni tu biblioteca ni tus
+listas:
+
+- **Tus playlists.** *"Pon mi playlist de gym"* buscaba "gym" en el catálogo y
+  reproducía la primera coincidencia del mundo. Hay que pedirlas por
+  `current_user_playlists` (con los permisos `playlist-read-private` y
+  `playlist-read-collaborative`) y emparejarlas por nombre. El emparejamiento
+  usa `token_set_ratio` y no `WRatio`: con este último, "rock" casaba al 90 con
+  una playlist llamada "Rocky soundtrack" por ser subcadena.
+- **Tus Me Gusta.** No son una playlist y no tienen `context_uri`: arrancarlos
+  como contexto es un 404. Hay que leer `current_user_saved_tracks` y pasar la
+  lista de URIs.
+
+El artista viaja en su propio slot y cambia la búsqueda entera: con artista se
+usan filtros de campo (`track:"X" artist:"Y"`) y se salta la cascada
+playlist→álbum→canción, porque *"pon la canción X de Y"* no puede acabar en una
+playlist llamada X.
+
+El molde "pon la canción X de Y" necesitó **nueve anclas** en el catálogo. Lo
+único estable de esa frase es la sintaxis: un título desconocido es casi ruido
+para el encoder, y con tres anclas *"pon la canción labios compartidos de maná"*
+ganaba a `spotify.like` por 0.012 — perder ahí no habría sido un "no entiendo",
+sino guardar en favoritos la canción que ya sonaba.
+
 ### `SendInput` y el tamaño de `INPUT`
 
 `SendInput` exige que `cbSize` sea exactamente `sizeof(INPUT)`: 40 bytes en x64.

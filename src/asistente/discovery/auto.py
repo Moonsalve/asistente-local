@@ -8,6 +8,15 @@ resultado se cachea y solo se vuelve a enumerar cuando caduca.
 PRECEDENCIA: lo declarado a mano en `apps:` SIEMPRE gana sobre lo descubierto.
 Si has puesto la ruta exacta de Spotify porque la deteccion fallaba, el
 descubrimiento no te la pisa.
+
+CON UNA EXCEPCION: si el comando escrito a mano NO SE PUEDE LANZAR en esta
+maquina, se sustituye por el descubierto. La precedencia existe para respetar
+una decision deliberada, no para defender un valor que no funciona; y el caso
+se dio de verdad: `config.yaml` trae `spotify: {command: spotify}`, que depende
+de que Spotify haya registrado su clave en App Paths. Cuando no lo hace -o la
+instalacion es de la Microsoft Store- "abre spotify" no encontraba nada,
+mientras el descubrimiento tenia el AppID correcto y lo estaba tirando a la
+basura por ser "menos prioritario".
 """
 
 from __future__ import annotations
@@ -16,11 +25,13 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 
-from asistente.config import Config
+from asistente.config import AppSpec, Config
 from asistente.discovery import DiscoveredApp
 from asistente.router.text import normalize
+from asistente.skills.launcher import can_launch
 
 log = logging.getLogger(__name__)
 
@@ -86,8 +97,6 @@ def augment_config(config: Config) -> Config:
     if not config.discovery.enabled:
         return config
 
-    from asistente.config import AppSpec
-
     apps = _load_cache(config.discovery.cache_hours)
     if apps is None:
         started = time.perf_counter()
@@ -122,13 +131,64 @@ def augment_config(config: Config) -> Config:
             aliases=alias,
         )
 
-    if not nuevas:
+    reparadas = repair_manual_entries(config.apps, apps)
+    if not nuevas and not reparadas:
         return config
 
-    log.info(
-        "allowlist: %d apps configuradas + %d descubiertas",
-        len(config.apps),
-        len(nuevas),
-    )
+    if nuevas:
+        log.info(
+            "allowlist: %d apps configuradas + %d descubiertas",
+            len(config.apps),
+            len(nuevas),
+        )
     # Las manuales al final para que ganen ante cualquier colision de clave.
-    return config.model_copy(update={"apps": {**nuevas, **config.apps}})
+    manuales = {**config.apps, **reparadas}
+    return config.model_copy(update={"apps": {**nuevas, **manuales}})
+
+
+def repair_manual_entries(
+    manual: dict[str, AppSpec],
+    discovered: list[DiscoveredApp],
+    puede_lanzar: Callable[[str], bool] = can_launch,
+) -> dict[str, AppSpec]:
+    """Entradas a mano que no se pueden lanzar, con el comando descubierto.
+
+    Solo se toca el `command`, y solo cuando el que hay no sirve: los alias que
+    hayas escrito y el nombre de proceso que hayas puesto se conservan, porque
+    son mejores que los deducidos (el descubrimiento no sabe que a Chrome le
+    llamas "el navegador", y para una app de la Store no sabe deducir ningun
+    proceso).
+
+    Se avisa por `log.warning` a proposito: que tu config apunte a algo que no
+    existe es algo que quieres saber, aunque el asistente lo haya sorteado.
+    """
+    por_nombre: dict[str, DiscoveredApp] = {}
+    for app in discovered:
+        por_nombre.setdefault(normalize(app.name), app)
+        por_nombre.setdefault(normalize(app.slug), app)
+
+    arregladas: dict[str, AppSpec] = {}
+    for key, spec in manual.items():
+        if puede_lanzar(spec.command):
+            continue
+        # La clave primero: es la que el usuario escribio pensando en esta app.
+        candidata: DiscoveredApp | None = None
+        for pista in (key, *spec.aliases):
+            if (candidata := por_nombre.get(normalize(pista))) is not None:
+                break
+        if candidata is None:
+            continue
+        log.warning(
+            "apps.%s: %r no se puede lanzar aqui; se usa lo descubierto (%s): %s",
+            key,
+            spec.command,
+            candidata.source,
+            candidata.command,
+        )
+        arregladas[key] = spec.model_copy(
+            update={
+                "command": candidata.command,
+                "process": spec.process or candidata.process,
+            }
+        )
+    return arregladas

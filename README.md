@@ -15,7 +15,7 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 3 etapas + skills | **Hecha y verificada** (222 tests) |
+| 2 | Router de 3 etapas + skills | **Hecha y verificada** (282 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 5 | Benchmark y tuning | Pendiente |
@@ -100,8 +100,10 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 222 tests, ~2 s
+PYTHONPATH=src pytest -q                           # 282 tests, ~3 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
+PYTHONPATH=src python scripts/diagnose_apps.py     # qué apps se abren y cuáles se cierran
+PYTHONPATH=src python scripts/diagnose_spotify.py  # dispositivos, tus playlists, me gusta
 PYTHONPATH=src python scripts/diagnose_volume.py   # qué mecanismo de volumen falla
 PYTHONPATH=src python scripts/diagnose_noise.py    # ruido de la sala y umbrales
 ```
@@ -226,6 +228,9 @@ Con Spotify abierto (hace falta un dispositivo activo):
 
 | Dices | Hace |
 |---|---|
+| *"Apolo, pon la canción Despacito de Luis Fonsi"* | esa canción de ese artista |
+| *"Apolo, pon mi playlist de gym"* | **tu** playlist, no una pública que se llame igual |
+| *"Apolo, pon mis me gusta"* / *"mis favoritas"* | tus canciones guardadas |
 | *"Apolo, pon la playlist de rock"* | busca y reproduce una playlist |
 | *"Apolo, pon música de los 80"* | idem por género o época |
 | *"Apolo, quiero escuchar a Shakira"* | busca por artista |
@@ -234,6 +239,25 @@ Con Spotify abierto (hace falta un dispositivo activo):
 | *"Apolo, qué canción es esta"* / *"quién canta esto"* | lo dice en voz alta |
 | *"Apolo, me gusta esta canción"* / *"guárdala"* | la añade a tus favoritos |
 | *"Apolo, pon el modo aleatorio"* | activa shuffle |
+
+**Tus playlists van antes que el catálogo público.** Si dices *"pon mi playlist
+de gym"* es porque existe y sabes cómo se llama; que exista una pública con el
+mismo nombre es casualidad. Se buscan con `current_user_playlists` y se
+emparejan por **palabras completas**: *"gym"* casa con "Gym mix" y no con
+"Gimnasio". Ponle a la playlist el nombre que dices en voz alta.
+
+**Los Me Gusta no son una playlist**: no tienen URI con la que arrancar la
+reproducción, así que se leen las 50 guardadas más recientemente y se ponen en
+cola. Si tienes el aleatorio puesto en Spotify, se aplica a esa cola.
+
+**Decir de quién es la canción cambia la búsqueda entera.** Con artista se usan
+los filtros de campo de Spotify (`track:"..." artist:"..."`) y se va directo a
+la canción, sin pasar por playlists ni álbumes. Si eso no devuelve nada —porque
+Whisper transcribió el título algo distinto de como está escrito— se reintenta
+en texto libre.
+
+Sin la palabra "canción" el artista no se separa: *"pon despacito de luis
+fonsi"* busca la frase entera, que Spotify también resuelve bien.
 
 ### Volumen: el del PC y el de Spotify son dos mandos distintos
 
@@ -300,13 +324,20 @@ casi siempre significa una playlist, no la primera canción titulada "Rock".
 
 ### Si añades comandos que necesitan permisos nuevos
 
-El token guardado solo sirve para los permisos con los que se creó. Al añadir
-`spotify.like` o `spotify.what_song` sobre una autorización antigua, borra el
-token para que Spotify vuelva a pedirlos:
+El token guardado solo sirve para los permisos con los que se creó. **Spotipy lo
+detecta solo**: comprueba que los permisos del token cacheado cubran los pedidos
+en `spotify.scopes` y, si no, lo descarta y vuelve a abrir el navegador. O sea
+que al actualizar el asistente basta con aceptar otra vez.
+
+Si por lo que sea no lo hiciera, se fuerza borrando el token:
 
 ```powershell
 del "$env:LOCALAPPDATA\asistente-local\spotify-token.json"
 ```
+
+Los permisos `playlist-read-private` y `playlist-read-collaborative` se añadieron
+el 2026-08-09 para poder ver **tus** playlists. Sin ellos solo se ven las
+públicas, y *"pon mi playlist de gym"* acabaría reproduciendo una ajena.
 
 ### Sin Premium, o si falla
 
@@ -385,13 +416,27 @@ verás cómo transcribió tu palabra clave. Añade esa forma a `phrases`.
 
 La app no se encuentra. Casi ningún instalador de Windows mete su ejecutable en
 el `PATH`; lo que hacen es registrarse en **App Paths** del registro, que es por
-lo que `Win+R → spotify` sí funciona. El asistente consulta esa clave, pero si
-una app no está ahí hay que darle la ruta.
+lo que `Win+R → spotify` sí funciona.
+
+El asistente busca por cuatro vías, en este orden: ruta que exista → `PATH` →
+App Paths → carpetas habituales de instalación (`%APPDATA%\Spotify\Spotify.exe`
+y compañía). La cuarta se añadió porque App Paths **no es obligatorio**: hay
+instaladores que no escriben la clave y actualizaciones que la dejan apuntando a
+una versión que ya no existe.
+
+Y si tu `config.yaml` apunta a algo que no se puede lanzar aquí, el
+autodescubrimiento **sustituye el comando** por el que sí funciona (conservando
+tus alias y tu nombre de proceso) y lo avisa en el log:
+
+```
+apps.spotify: 'spotify' no se puede lanzar aqui; se usa lo descubierto
+(start_apps): shell:AppsFolder\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify
+```
 
 Comprueba toda la allowlist de una vez:
 
 ```powershell
-python scripts/diagnose_apps.py          # cuáles se localizan y cuáles no
+python scripts/diagnose_apps.py          # qué se abre, qué se cierra
 python scripts/diagnose_apps.py --fix    # además, intenta adivinar las rutas
 ```
 
@@ -403,6 +448,23 @@ apps:
     command: 'C:\Users\TU_USUARIO\AppData\Roaming\Spotify\Spotify.exe'
     process: Spotify
 ```
+
+### *"Cierra X"* no cierra nada
+
+Abrir y cerrar son dos problemas distintos: abrir necesita una **ruta** y cerrar
+necesita el **nombre del proceso**, que a menudo no aparece en ningún sitio de la
+config. Las apps de la Microsoft Store llegan del descubrimiento sin proceso
+alguno, y los accesos directos del menú Inicio con uno adivinado pegando el
+título ("Visual Studio Code" → `VisualStudioCode.exe`, que no existe: es
+`Code.exe`).
+
+Por eso el nombre ya no se adivina: se cruzan los nombres plausibles de la
+entrada (su `process`, su comando, su clave y sus alias) con la lista de
+procesos que **están corriendo**, y se mata uno que existe. Si no coincide
+ninguno, te dice que no está abierto en vez de fallar en silencio.
+
+`python scripts/diagnose_apps.py` imprime, para lo que hay abierto ahora mismo,
+qué proceso se mataría con cada app.
 
 ### El asistente no entiende una frase
 

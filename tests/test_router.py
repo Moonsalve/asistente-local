@@ -88,6 +88,24 @@ CORPUS: list[tuple[str, str, dict[str, str] | None]] = [
     ("pon música de los 80", "spotify.play", {"query": "los 80"}),
     ("quiero escuchar a shakira", "spotify.play", {"query": "shakira"}),
     ("ponme el álbum de pink floyd", "spotify.play", {"query": "pink floyd"}),
+    # --- spotify.play con artista. Los títulos son OTROS que los del catálogo a
+    # propósito: lo que hay que demostrar es que el molde "pon la canción X de
+    # Y" se reconoce con nombres propios que el encoder no ha visto nunca, que
+    # es lo único que se repite entre una petición y la siguiente.
+    ("pon la canción despacito de luis fonsi", "spotify.play",
+     {"query": "despacito", "artist": "luis fonsi"}),
+    ("ponme la canción enter sandman de metallica", "spotify.play",
+     {"query": "enter sandman", "artist": "metallica"}),
+    ("reproduce la canción la bamba de los lobos", "spotify.play",
+     {"query": "la bamba", "artist": "los lobos"}),
+    ("pon el tema shine on you crazy diamond de pink floyd", "spotify.play",
+     {"query": "shine on you crazy diamond", "artist": "pink floyd"}),
+    ("quiero escuchar la canción clandestino de manu chao", "spotify.play",
+     {"query": "clandestino", "artist": "manu chao"}),
+    # --- spotify.liked: la colección entera, no la canción que suena
+    ("reproduce la playlist de mis me gusta", "spotify.liked", None),
+    ("pon lo que tengo guardado", "spotify.liked", None),
+    ("pon las canciones que le di like", "spotify.liked", None),
     # --- open.target: apps y webs comparten intent a proposito
     ("ábreme el chrome", "open.target", {"target": "chrome"}),
     ("inicia el spotify", "open.target", {"target": "spotify"}),
@@ -100,6 +118,10 @@ CORPUS: list[tuple[str, str, dict[str, str] | None]] = [
     ("cierra el chrome", "app.close", {"app": "chrome"}),
     ("mata el discord", "app.close", {"app": "discord"}),
     ("termina el spotify", "app.close", {"app": "spotify"}),
+    # El "de" tenía que consumirlo el regex: entregaba app="de spotify" y solo
+    # se resolvía porque el matching difuso de la allowlist lo perdonaba.
+    ("cierra la aplicación de spotify", "app.close", {"app": "spotify"}),
+    ("cierra el programa de discord", "app.close", {"app": "discord"}),
     # --- web.search
     ("búscame el precio del dólar", "web.search", {"query": "el precio del dolar"}),
     ("googlea restaurantes cerca", "web.search", {"query": "restaurantes cerca"}),
@@ -190,6 +212,42 @@ def test_plain_volume_commands_carry_no_target(router: Router) -> None:
         assert result.tool_call is not None
         assert "target" not in result.tool_call.args, (
             f"{phrase!r} extrajo target={result.tool_call.args['target']!r} sin haberlo dicho"
+        )
+
+
+def test_liking_and_playing_the_liked_stay_apart(router: Router) -> None:
+    """La trampa de este par: `spotify.like` ESCRIBE en la colección y
+    `spotify.liked` la LEE, y comparten las palabras que más pesan.
+
+    Confundirlas no da un "no entiendo": pedir tus me gusta guardaría la canción
+    que ya sonaba, y decir que te gusta la actual pondría otra cosa.
+    """
+    guardar = ("me gusta esta canción", "guárdala en favoritos", "dale like a esta")
+    reproducir = ("pon mis me gusta", "reproduce mis favoritas", "pon mis canciones guardadas")
+
+    for phrase in guardar:
+        result = router.route(phrase)
+        assert result.tool_call is not None
+        assert result.tool_call.name == "spotify.like", f"{phrase!r} -> {result.tool_call.name}"
+    for phrase in reproducir:
+        result = router.route(phrase)
+        assert result.tool_call is not None
+        assert result.tool_call.name == "spotify.liked", f"{phrase!r} -> {result.tool_call.name}"
+
+
+def test_a_song_without_an_artist_carries_no_artist(router: Router) -> None:
+    """La mitad peligrosa del slot `artist`.
+
+    "de" es la preposición más común del español y aparece en casi cualquier
+    petición de música. Si el patrón disparara de más, "pon algo de jazz"
+    buscaría una canción llamada "algo" del grupo "jazz" y no sonaría nada.
+    """
+    for phrase in ("pon algo de jazz", "reproduce la playlist de estudio",
+                   "ponme el álbum de pink floyd", "pon música de los 80"):
+        result = router.route(phrase)
+        assert result.tool_call is not None
+        assert "artist" not in result.tool_call.args, (
+            f"{phrase!r} extrajo artist={result.tool_call.args['artist']!r} sin haberlo dicho"
         )
 
 

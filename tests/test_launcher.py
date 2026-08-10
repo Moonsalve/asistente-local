@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from asistente.logsetup import RobustStreamHandler
-from asistente.skills.launcher import resolve_executable
+from asistente.skills.launcher import can_launch, resolve_executable
 
 
 def test_resolves_an_absolute_path(tmp_path: Path) -> None:
@@ -30,6 +30,27 @@ def test_unknown_command_returns_none() -> None:
     """None y no una excepcion: 'no instalado' es una condicion ordinaria que
     la skill traduce a un mensaje para el usuario."""
     assert resolve_executable("programa-que-no-existe-12345") is None
+
+
+def test_store_apps_and_uris_count_as_launchable() -> None:
+    """`can_launch` no puede reducirse a "existe el .exe": una app de la Store y
+    un `steam://` no tienen ejecutable localizable y se lanzan perfectamente.
+    Si dijera que no, el descubrimiento reescribiria entradas que si funcionan."""
+    assert can_launch("shell:AppsFolder\\SpotifyAB.SpotifyMusic_zpd!Spotify")
+    assert can_launch("steam://rungameid/730")
+
+
+def test_a_shortcut_counts_only_if_the_file_is_there(tmp_path: Path) -> None:
+    atajo = tmp_path / "Spotify.lnk"
+    assert not can_launch(str(atajo))
+    atajo.write_bytes(b"")
+    assert can_launch(str(atajo))
+
+
+def test_a_command_that_resolves_to_nothing_is_not_launchable() -> None:
+    """El caso que rompia "abre spotify": `command: spotify` depende de que el
+    instalador registrara la clave en App Paths, y no siempre lo hace."""
+    assert not can_launch("programa-que-no-existe-12345")
 
 
 def _capture(encoding: str) -> tuple[logging.Logger, io.TextIOWrapper]:

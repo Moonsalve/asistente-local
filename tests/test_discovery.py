@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 
+from asistente.config import AppSpec
 from asistente.discovery import DiscoveredApp, _dedupe, make_slug
+from asistente.discovery.auto import repair_manual_entries
 from asistente.discovery.steam import _game_aliases, discover_steam_games, library_folders
 
 
@@ -53,6 +55,65 @@ def test_slugs_are_unique() -> None:
 def test_make_slug_avoids_collisions() -> None:
     assert make_slug("Spotify", set()) == "spotify"
     assert make_slug("Spotify", {"spotify"}) == "spotify_2"
+
+
+# --------------------------------------------------------- reparar la config
+#
+# La precedencia "lo manual gana" es correcta salvo en un caso: cuando lo manual
+# NO FUNCIONA. Es lo que pasaba con `spotify: {command: spotify}`, que depende de
+# una clave del registro que no siempre existe, mientras el descubrimiento tenia
+# el AppID bueno y lo tiraba por ser "menos prioritario".
+
+_NUNCA = lambda command: False  # noqa: E731 - nada se puede lanzar
+_SIEMPRE = lambda command: True  # noqa: E731 - todo se puede lanzar
+
+
+def test_a_broken_manual_command_is_replaced() -> None:
+    manual = {"spotify": AppSpec(command="spotify", process="Spotify", aliases=("spoti",))}
+    descubierto = [DiscoveredApp(name="Spotify", command="shell:AppsFolder\\X!App",
+                                 source="start_apps", slug="spotify")]
+
+    arregladas = repair_manual_entries(manual, descubierto, puede_lanzar=_NUNCA)
+    assert arregladas["spotify"].command == "shell:AppsFolder\\X!App"
+
+
+def test_a_working_manual_command_is_left_alone() -> None:
+    """Si escribiste la ruta exacta porque la deteccion fallaba, nadie te la toca."""
+    manual = {"spotify": AppSpec(command=r"C:\mi\ruta\Spotify.exe")}
+    descubierto = [DiscoveredApp(name="Spotify", command="otra-cosa", source="start_apps",
+                                 slug="spotify")]
+    assert repair_manual_entries(manual, descubierto, puede_lanzar=_SIEMPRE) == {}
+
+
+def test_repairing_keeps_your_aliases_and_your_process() -> None:
+    """Solo el comando esta roto. Tus alias y tu nombre de proceso son mejores
+    que los deducidos: el descubrimiento no sabe que a Chrome le llamas "el
+    navegador" ni deduce proceso alguno de una app de la Store."""
+    manual = {"chrome": AppSpec(command="chrome", process="chrome",
+                                aliases=("el navegador", "navegador"))}
+    descubierto = [DiscoveredApp(name="Google Chrome", command=r"C:\chrome.exe",
+                                 source="app_paths", process="GoogleChrome", slug="google_chrome",
+                                 aliases=())]
+
+    arregladas = repair_manual_entries(manual, descubierto, puede_lanzar=_NUNCA)
+    assert arregladas == {}, "no coincide ni la clave ni ningun alias: no hay a que agarrarse"
+
+
+def test_an_alias_is_enough_to_find_the_replacement() -> None:
+    manual = {"vscode": AppSpec(command="code", aliases=("visual studio code",))}
+    descubierto = [DiscoveredApp(name="Visual Studio Code", command=r"C:\Code.exe",
+                                 source="app_paths", process="Code", slug="visual_studio_code")]
+
+    arregladas = repair_manual_entries(manual, descubierto, puede_lanzar=_NUNCA)
+    assert arregladas["vscode"].command == r"C:\Code.exe"
+    assert arregladas["vscode"].process == "Code", "no habia proceso a mano; se toma el descubierto"
+
+
+def test_nothing_to_replace_with_leaves_the_entry_as_is() -> None:
+    """Sin candidata, mejor la entrada rota que una inventada: el mensaje de
+    "no pude abrir X" es diagnosticable, abrir otra cosa no."""
+    manual = {"spotify": AppSpec(command="spotify")}
+    assert repair_manual_entries(manual, [], puede_lanzar=_NUNCA) == {}
 
 
 @pytest.mark.parametrize(

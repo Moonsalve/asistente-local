@@ -280,11 +280,22 @@ class SpotifyConfig(BaseModel):
     #: autorizado, hay que borrar el token cacheado para que vuelva a pedirlo:
     #: el guardado solo sirve para los permisos con los que se creo.
     scopes: tuple[str, ...] = (
-        "user-modify-playback-state",   # play, pausa, siguiente, volumen
-        "user-read-playback-state",     # saber que dispositivo esta activo
-        "user-read-currently-playing",  # "que cancion es esta"
-        "user-library-modify",          # "me gusta esta cancion"
-        "user-library-read",
+        "user-modify-playback-state",     # play, pausa, siguiente, volumen
+        "user-read-playback-state",       # saber que dispositivo esta activo
+        "user-read-currently-playing",    # "que cancion es esta"
+        "user-library-modify",            # "me gusta esta cancion"
+        "user-library-read",              # "pon mis me gusta"
+        # Sin estos dos, `current_user_playlists` solo devuelve tus playlists
+        # PUBLICAS, y "pon mi playlist de gym" no encontraria las privadas —que
+        # son la mayoria— y acabaria reproduciendo una del catalogo publico que
+        # se llame parecido.
+        #
+        # Anadir un permiso a esta lista NO obliga a borrar el token a mano:
+        # comprobado en el codigo de spotipy 2.26, `validate_token` descarta el
+        # cacheado si sus permisos no cubren los pedidos y vuelve a abrir el
+        # navegador. Solo hay que borrarlo si eso no llegara a pasar.
+        "playlist-read-private",
+        "playlist-read-collaborative",
     )
     #: Si la API falla o no hay dispositivo activo, se recurre a las teclas
     #: multimedia de Windows. Menos capaz pero nunca deja el comando sin efecto.

@@ -55,10 +55,20 @@ POSITIVES = [
     ("a qué volumen está la música", "volume.query"),
     ("pon música de los 80", "spotify.play"),
     ("quiero escuchar a shakira", "spotify.play"),
+    # Canción + artista: los títulos son otros que los anclados a propósito. Lo
+    # estable entre una petición y la siguiente es el molde, no el nombre.
+    ("pon la canción despacito de luis fonsi", "spotify.play"),
+    ("ponme la canción enter sandman de metallica", "spotify.play"),
+    ("pon el tema shine on you crazy diamond de pink floyd", "spotify.play"),
+    # Reproducir la colección de me gusta, que no es guardar la que suena.
+    ("reproduce la playlist de mis me gusta", "spotify.liked"),
+    ("pon lo que tengo guardado", "spotify.liked"),
+    ("me gusta esta canción", "spotify.like"),
     ("ábreme el chrome", "open.target"),
     ("corre la calculadora", "open.target"),
     ("mata el discord", "app.close"),
     ("termina el spotify", "app.close"),
+    ("cierra la aplicación de spotify", "app.close"),
     ("entra a youtube", "open.target"),
     ("llévame a netflix", "open.target"),
     ("búscame el precio del dólar", "web.search"),
