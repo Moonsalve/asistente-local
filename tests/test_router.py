@@ -166,6 +166,89 @@ def test_corpus_routes_without_llm(
             )
 
 
+def test_no_pattern_steals_a_phrase_from_another_intent(router: Router) -> None:
+    """LA RED DE SEGURIDAD DE LA ETAPA DE PATRONES.
+
+    Un `pattern` se salta el juicio del encoder, así que uno demasiado goloso
+    secuestraría comandos legítimos —"pon el volumen al 50" también empieza por
+    "pon"—. Este test recorre TODAS las frases del catálogo y comprueba que
+    ningún patrón reclama las de otro intent.
+
+    Es lo que mantiene honesto el guardia negativo de `spotify.play`: si alguien
+    añade "pon el modo repetición" a otro intent y se olvida del guardia, esto
+    falla aquí y no en el PC de Juan.
+    """
+    from asistente.router.patterns import match_pattern
+    from asistente.router.text import normalize
+
+    catalog = router._catalog  # noqa: SLF001 - acceso deliberado en test
+    for name, spec in catalog.intents.items():
+        for phrase in (*spec.examples, *spec.literal):
+            hit = match_pattern(catalog, normalize(phrase))
+            if hit is None:
+                continue
+            assert hit[0] == name, (
+                f"el patrón de {hit[0]!r} se lleva {phrase!r}, que es de {name!r}"
+            )
+
+
+def test_no_pattern_steals_a_phrase_from_the_corpus(router: Router) -> None:
+    """La otra mitad: las frases del corpus tampoco están en el catálogo, y son
+    las que miden generalización. Si un patrón se lleva una, el fallo sería
+    invisible en el test de arriba."""
+    from asistente.router.patterns import match_pattern
+    from asistente.router.text import normalize
+
+    catalog = router._catalog  # noqa: SLF001 - acceso deliberado en test
+    for phrase, expected_intent, _ in CORPUS:
+        hit = match_pattern(catalog, normalize(phrase))
+        if hit is not None:
+            assert hit[0] == expected_intent, (
+                f"el patrón de {hit[0]!r} se lleva {phrase!r}, que es de {expected_intent!r}"
+            )
+
+
+def test_titles_the_encoder_cannot_know_are_resolved_by_shape(router: Router) -> None:
+    """EL CASO REPORTADO. "reproduce loving machine de tv girl" acababa en
+    spotify.liked (0.461) y "pon despacito de luis fonsi" en media.play_pause
+    (0.323): el título son nombres propios que el encoder no ha visto y su
+    vector es ruido.
+
+    Ningún umbral lo arregla —medido, las frases secuestradas puntúan 0.291-0.628
+    y las que el catálogo acierta 0.290-0.68, se solapan enteras—, así que la
+    decisión la toma la sintaxis y la etapa es la de patrones, no la semántica.
+    """
+    casos = [
+        ("reproduce loving machine de tv girl", "loving machine", "tv girl"),
+        ("pon despacito de luis fonsi", "despacito", "luis fonsi"),
+        ("pon blinding lights de the weeknd", "blinding lights", "the weeknd"),
+        ("reproduce nothing else matters de metallica", "nothing else matters", "metallica"),
+        ("ponme lovers rock de tv girl", "lovers rock", "tv girl"),
+    ]
+    for phrase, query, artist in casos:
+        result = router.route(phrase)
+        assert result.stage is Stage.PATTERN, f"{phrase!r} llegó a {result.stage}"
+        assert result.tool_call is not None
+        assert result.tool_call.name == "spotify.play", f"{phrase!r} -> {result.tool_call.name}"
+        assert result.tool_call.args["query"] == query
+        assert result.tool_call.args["artist"] == artist
+
+
+def test_a_bare_title_without_an_artist_also_works(router: Router) -> None:
+    """Sin "de" no hay artista que separar, pero el molde sigue siendo
+    reconocible y el título entero se busca tal cual."""
+    for phrase, query in [
+        ("pon lovers rock", "lovers rock"),
+        ("ponme hotel california", "hotel california"),
+        ("reproduce smells like teen spirit", "smells like teen spirit"),
+    ]:
+        result = router.route(phrase)
+        assert result.tool_call is not None
+        assert result.tool_call.name == "spotify.play"
+        assert result.tool_call.args["query"] == query
+        assert "artist" not in result.tool_call.args
+
+
 def test_literal_stage_is_used_for_catalog_phrases(router: Router) -> None:
     """Las frases declaradas como literales no deben pagar el encoder."""
     assert router.route("siguiente canción").stage is Stage.LITERAL

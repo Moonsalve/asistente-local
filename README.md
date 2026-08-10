@@ -15,7 +15,7 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 3 etapas + skills | **Hecha y verificada** (282 tests) |
+| 2 | Router de 3 etapas + skills | **Hecha y verificada** (296 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 5 | Benchmark y tuning | Pendiente |
@@ -228,7 +228,8 @@ Con Spotify abierto (hace falta un dispositivo activo):
 
 | Dices | Hace |
 |---|---|
-| *"Apolo, pon la canción Despacito de Luis Fonsi"* | esa canción de ese artista |
+| *"Apolo, reproduce Loving Machine de TV Girl"* | esa canción de ese grupo |
+| *"Apolo, pon la canción Despacito de Luis Fonsi"* | igual, diciéndolo largo |
 | *"Apolo, pon mi playlist de gym"* | **tu** playlist, no una pública que se llame igual |
 | *"Apolo, pon mis me gusta"* / *"mis favoritas"* | tus canciones guardadas |
 | *"Apolo, pon la playlist de rock"* | busca y reproduce una playlist |
@@ -254,10 +255,19 @@ cola. Si tienes el aleatorio puesto en Spotify, se aplica a esa cola.
 los filtros de campo de Spotify (`track:"..." artist:"..."`) y se va directo a
 la canción, sin pasar por playlists ni álbumes. Si eso no devuelve nada —porque
 Whisper transcribió el título algo distinto de como está escrito— se reintenta
-en texto libre.
+en texto libre, y por último con la frase entera tal cual la dijiste.
 
-Sin la palabra "canción" el artista no se separa: *"pon despacito de luis
-fonsi"* busca la frase entera, que Spotify también resuelve bien.
+**No hace falta decir "la canción".** *"Reproduce loving machine de tv girl"*
+funciona igual que *"pon la canción loving machine de tv girl"*: la primera la
+resuelve la etapa de patrones por su forma, porque un título que el modelo no ha
+visto nunca no se puede clasificar por significado (ver `ARCHITECTURE.md`).
+
+**Si no encuentra lo que pediste, lo dice.** Antes se quedaba con el primer
+resultado de la búsqueda, y como `search()` siempre devuelve algo, pedir *"loving
+machine de tv girl"* podía acabar poniendo una playlist llamada "TV Girl". Ahora
+el resultado tiene que **cubrir** las palabras que dijiste; si ninguno lo hace,
+no suena nada y te lo dice. Es preferible repetir la orden a que suene otra cosa
+y parezca que funcionó.
 
 ### Volumen: el del PC y el de Spotify son dos mandos distintos
 

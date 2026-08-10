@@ -18,10 +18,12 @@ import pytest
 from asistente.config import Config, Secrets
 from asistente.skills.base import NoArgs
 from asistente.skills.spotify import (
+    MIN_COBERTURA,
     LikedSkill,
     PlayArgs,
     SpotifyClient,
     SpotifyPlaySkill,
+    cobertura,
 )
 
 
@@ -70,8 +72,11 @@ def _client(fake: FakeSpotify) -> SpotifyClient:
     return client
 
 
-def _uri(name: str, uri: str) -> dict[str, Any]:
-    return {"name": name, "uri": uri}
+def _uri(name: str, uri: str, *artistas: str) -> dict[str, Any]:
+    """Un item de la API. `artists` solo lo traen las canciones y los albumes, y
+    forma parte de lo que se compara: sin el, "la bamba de los lobos" solo
+    cubriria la mitad de las palabras que se dijeron."""
+    return {"name": name, "uri": uri, "artists": [{"name": a} for a in artistas]}
 
 
 # --------------------------------------------------------------- tus playlists
@@ -169,7 +174,9 @@ def test_a_song_with_an_artist_uses_field_filters() -> None:
     y Spotify devuelve cualquier cosa."""
     fake = FakeSpotify(
         catalogo={
-            'track:track:"la bamba" artist:"los lobos"': [_uri("La Bamba", "spotify:track:OK")]
+            'track:track:"la bamba" artist:"los lobos"': [
+                _uri("La Bamba", "spotify:track:OK", "Los Lobos")
+            ]
         }
     )
     outcome = _client(fake).play_query("la bamba", artist="los lobos")
@@ -184,7 +191,7 @@ def test_free_text_is_the_second_attempt() -> None:
     Whisper se desvia una letra no devuelven nada, y rendirse ahi seria peor que
     reintentar con la busqueda tolerante."""
     fake = FakeSpotify(
-        catalogo={"track:la bamba los lobos": [_uri("La Bamba", "spotify:track:OK")]}
+        catalogo={"track:la bamba los lobos": [_uri("La Bamba", "spotify:track:OK", "Los Lobos")]}
     )
     outcome = _client(fake).play_query("la bamba", artist="los lobos")
 
@@ -196,7 +203,9 @@ def test_an_artist_skips_the_playlist_cascade() -> None:
     """"Pon la cancion X de Y" no puede acabar en una playlist llamada X."""
     fake = FakeSpotify(
         playlists=[_uri("La Bamba", "spotify:playlist:MIA")],
-        catalogo={"track:la bamba los lobos": [_uri("La Bamba", "spotify:track:OK")]},
+        catalogo={
+            "track:la bamba los lobos": [_uri("La Bamba", "spotify:track:OK", "Los Lobos")]
+        },
     )
     _client(fake).play_query("la bamba", artist="los lobos")
     assert fake.reproducido[0]["uris"] == ["spotify:track:OK"]
@@ -239,6 +248,87 @@ def test_null_items_from_the_api_do_not_crash() -> None:
     assert outcome.reason == "no_encontrado"
 
 
+# ------------------------------------------------- el resultado tiene que valer
+#
+# `search()` SIEMPRE devuelve algo. Quedarse con el primero era lo que hacia que
+# "reproduce loving machine de tv girl" acabara poniendo cualquier cosa y
+# pareciera que el comando habia funcionado.
+
+
+def test_a_result_that_does_not_cover_what_was_asked_is_refused() -> None:
+    """EL CASO REPORTADO. Se pide una cancion concreta y Spotify devuelve una
+    playlist que solo comparte el nombre del grupo: dos palabras de cuatro."""
+    fake = FakeSpotify(
+        catalogo={"playlist:loving machine de tv girl": [_uri("TV Girl", "spotify:playlist:NO")]}
+    )
+    outcome = _client(fake).play_query("loving machine de tv girl")
+
+    assert not outcome.ok
+    assert outcome.reason == "no_encontrado"
+    assert not fake.reproducido, "mejor no sonar nada que sonar otra cosa"
+
+
+def test_a_broader_result_is_fine_when_you_asked_broadly() -> None:
+    """La medida es DIRECCIONAL: lo que se pidio tiene que estar en el
+    resultado, no al reves. Pediste jazz y te ponen una lista de jazz: correcto.
+    Es la misma comparacion que rechaza el caso de arriba."""
+    fake = FakeSpotify(
+        catalogo={"playlist:jazz": [_uri("Jazz Classics", "spotify:playlist:SI")]}
+    )
+    assert _client(fake).play_query("jazz").ok
+
+
+def test_the_best_of_several_results_wins_not_the_first() -> None:
+    """Spotify no siempre pone el bueno arriba; por eso se piden varios."""
+    fake = FakeSpotify(
+        catalogo={
+            "track:loving machine tv girl": [
+                _uri("Machine", "spotify:track:NO", "Otra Banda"),
+                _uri("Loving Machine", "spotify:track:SI", "TV Girl"),
+            ]
+        }
+    )
+    outcome = _client(fake).play_query("loving machine", artist="tv girl")
+
+    assert outcome.ok
+    assert fake.reproducido[0]["uris"] == ["spotify:track:SI"]
+
+
+def test_the_whole_phrase_is_the_last_resort_of_the_artist_guess() -> None:
+    """El router entrega `artist` como HIPOTESIS partiendo por el ultimo "de", y
+    a veces se parte mal. El ultimo intento busca la frase tal cual se dijo."""
+    fake = FakeSpotify(
+        catalogo={
+            "track:el dia que me quieras de gardel": [
+                _uri("El día que me quieras", "spotify:track:SI", "Carlos Gardel")
+            ]
+        }
+    )
+    outcome = _client(fake).play_query("el dia que me quieras", artist="gardel")
+
+    assert outcome.ok
+    assert len(fake.busquedas) == 3, "filtros, texto libre, y la frase entera"
+
+
+@pytest.mark.parametrize(
+    ("pedido", "nombre", "artista", "vale"),
+    [
+        ("loving machine de tv girl", "Loving Machine", "TV Girl", True),
+        ("loving machine de tv girl", "TV Girl", "", False),
+        ("jazz", "Jazz Classics", "", True),
+        ("rock", "Rocky soundtrack", "", False),
+        # Whisper transcribe como suena: una letra de diferencia no puede
+        # tumbar la busqueda.
+        ("loving machin de tv girl", "Loving Machine", "TV Girl", True),
+        # "de" no cuenta: es la preposicion mas comun del espanol y estaria en
+        # todas las peticiones y en ningun titulo.
+        ("la bamba", "La Bamba", "Los Lobos", True),
+    ],
+)
+def test_coverage(pedido: str, nombre: str, artista: str, vale: bool) -> None:
+    assert (cobertura(pedido, nombre, artista) >= MIN_COBERTURA) is vale
+
+
 # ------------------------------------------------------------------- motivos
 
 
@@ -271,7 +361,9 @@ def test_the_liked_skill_stays_quiet_when_it_works() -> None:
 def test_a_song_with_an_artist_is_confirmed_out_loud() -> None:
     """Aqui si: es el caso donde puede haber sonado algo que no era, y oir el
     nombre lo delata sin tener que mirar la pantalla."""
-    fake = FakeSpotify(catalogo={"track:la bamba los lobos": [_uri("x", "spotify:track:OK")]})
+    fake = FakeSpotify(
+        catalogo={"track:la bamba los lobos": [_uri("La Bamba", "spotify:track:OK", "Los Lobos")]}
+    )
     result = SpotifyPlaySkill(_client(fake)).execute(PlayArgs(query="la bamba", artist="los lobos"))
     assert result.ok
     assert "los lobos" in (result.speech or "")

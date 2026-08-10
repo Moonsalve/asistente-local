@@ -1,8 +1,13 @@
-"""Diagnostico del router: scores reales por frase.
+"""Diagnostico de la ETAPA SEMANTICA del router: scores reales por frase.
 
 Sirve para calibrar el umbral del coseno. Imprime, para cada frase, el intent
 ganador, su score y el segundo clasificado. La separacion entre ambos es lo que
 indica si al catalogo le faltan ejemplos que distingan dos intents parecidos.
+
+Las frases que resuelven ANTES -en la etapa literal o en la de patrones- se
+marcan y no se puntuan: preguntarle al coseno por una frase que nunca va a ver
+da un numero que no significa nada. Es justo el caso de "reproduce <titulo> de
+<artista>", que existe precisamente porque el coseno no sabe juzgarla.
 
 Uso:  PYTHONPATH=src python scripts/diagnose_router.py
 """
@@ -60,6 +65,11 @@ POSITIVES = [
     ("pon la canción despacito de luis fonsi", "spotify.play"),
     ("ponme la canción enter sandman de metallica", "spotify.play"),
     ("pon el tema shine on you crazy diamond de pink floyd", "spotify.play"),
+    # Sin la palabra "canción" no hay nada que el coseno pueda juzgar: estas las
+    # resuelve la etapa de patrones y aqui salen marcadas como tal.
+    ("reproduce loving machine de tv girl", "spotify.play"),
+    ("pon despacito de luis fonsi", "spotify.play"),
+    ("ponme hotel california", "spotify.play"),
     # Reproducir la colección de me gusta, que no es guardar la que suena.
     ("reproduce la playlist de mis me gusta", "spotify.liked"),
     ("pon lo que tengo guardado", "spotify.liked"),
@@ -90,6 +100,18 @@ NEGATIVES = [
 ]
 
 
+def _resuelto_antes(catalog: object, normalized: str) -> str | None:
+    """Intent que resuelve la frase sin llegar al coseno, o None."""
+    from asistente.router.catalog import Catalog
+    from asistente.router.patterns import match_pattern
+
+    assert isinstance(catalog, Catalog)
+    if (intent := catalog.literal_index.get(normalized)) is not None:
+        return intent
+    hit = match_pattern(catalog, normalized)
+    return None if hit is None else hit[0]
+
+
 def main() -> int:
     embedder = OnnxEmbedder()
     catalog = load_catalog(ROOT / "commands.yaml", embedder)
@@ -102,7 +124,13 @@ def main() -> int:
     wrong_positives = 0
     print("\n### POSITIVOS\n")
     for phrase, expected in POSITIVES:
-        m = matcher.match(normalize(phrase))
+        normalized = normalize(phrase)
+        if (intent := _resuelto_antes(catalog, normalized)) is not None:
+            marca = "ok " if intent == expected else "ERR"
+            wrong_positives += 0 if intent == expected else 1
+            print(f"{marca} {phrase:<44} {intent:<18} {'(etapa previa)':>6}")
+            continue
+        m = matcher.match(normalized)
         if m is None:
             wrong_positives += 1
             print(f"ERR {phrase:<44} {'_fallback (escalo al LLM)':<18}")

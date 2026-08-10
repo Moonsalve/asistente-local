@@ -16,7 +16,9 @@ flowchart TD
     VAD --> STT[faster-whisper large-v3-turbo<br/>int8_float16 · CUDA · ~1.6 GB]
     STT --> R0{1· Match literal<br/>&lt; 0.001 s}
     R0 -->|hit| VAL
-    R0 -->|miss| R1{2· Match semántico<br/>e5-small centrado · 2 ms}
+    R0 -->|miss| RP{1.5· Patrones de forma<br/>regex · &lt; 0.001 s}
+    RP -->|"pon X de Y"| SLOT
+    RP -->|miss| R1{2· Match semántico<br/>e5-small centrado · 2 ms}
     R1 -->|intent| SLOT[Extracción de slots<br/>regex por intent]
     R1 -->|gana _fallback| LLM[3· Qwen 2.5 3B Q4<br/>Ollama · format=json]
 
@@ -172,6 +174,72 @@ manda el primero que la rellena. Así un intent puede repartir sus argumentos en
 regex independientes —*"pon el volumen de spotify al 45"* necesita uno para el
 nivel y otro para el destino— sin cambiar el comportamiento donde varios
 patrones son alternativas del mismo argumento.
+
+### Hay frases sin significado que juzgar
+
+*"Reproduce loving machine de tv girl"*. El título y el grupo son nombres
+propios que el encoder no ha visto nunca: su vector es prácticamente ruido, y el
+coseno lo asignaba a cualquier intent con un score mediocre.
+
+| Frase | Ganaba | Score |
+|---|---|---|
+| reproduce loving machine de tv girl | `spotify.liked` | 0.461 |
+| pon despacito de luis fonsi | `media.play_pause` | 0.323 |
+| pon blinding lights de the weeknd | `spotify.liked` | 0.453 |
+
+No es que falten anclas: **es que no hay nada que anclar**, porque el título
+cambia en cada petición. Lo único constante de la frase es el molde.
+
+Y tampoco lo arregla un umbral. Medido: las frases secuestradas puntúan entre
+0.291 y 0.628, y las que el catálogo acierta, entre 0.290 y 0.68. Se solapan
+enteras — el mismo hallazgo que hizo descartar el umbral absoluto de coseno, un
+piso más arriba.
+
+Así que la decisión se mueve a donde sí es fiable, la sintaxis: una **etapa 1.5
+de patrones**, entre la literal y la semántica. Un intent declara `patterns:` en
+`commands.yaml` y esos regex deciden el intent por sí solos, en 0 ms.
+
+Lo peligroso es lo goloso: *"pon el volumen al 50"* también empieza por "pon".
+Tres cosas lo contienen:
+
+1. El patrón genérico lleva un **guardia negativo** con el vocabulario que el
+   asistente ya reclama para sí (volumen, pausa, siguiente, aleatorio, mis me
+   gusta…). No es una lista de frases que el usuario deba aprender, y solo crece
+   cuando un intent nuevo reclama una forma con "pon".
+2. **El orden de declaración manda**, así que cada intent reclama sus propias
+   formas en su bloque y lo específico va antes que lo genérico. Por eso
+   `spotify.liked` está declarado antes que `spotify.play`.
+3. `tests/test_router.py` recorre **todas** las frases del catálogo y del corpus
+   y comprueba que ningún patrón reclama las de otro intent. El guardia no puede
+   quedarse obsoleto en silencio.
+
+Lo que el regex **no** decide es el significado. *"Pon X de Y"* entrega una
+hipótesis —título X, artista Y—; que eso sea de verdad una canción lo resuelve
+Spotify al buscarla, y si la hipótesis parte mal la frase se reintenta entera.
+Mismo reparto que en `open.target`: **la forma la reconoce el router, el sentido
+lo resuelven los datos.**
+
+### Un resultado de búsqueda tiene que cubrir lo que se pidió
+
+`search()` siempre devuelve algo. Quedarse con el primero significaba que pedir
+*"loving machine de tv girl"* reprodujera una playlist llamada "TV Girl" —dos
+palabras de cuatro— y pareciera que el comando había funcionado.
+
+Ahora se piden 5 resultados y se exige que el elegido **cubra** lo que se dijo:
+qué fracción de las palabras de la petición aparece en el nombre (y en el
+artista, si es una canción). Por debajo de 0.6 no se reproduce nada y se dice
+que no se encontró.
+
+La medida es **direccional** a propósito, y por eso no vale una similitud al
+uso: `token_set_ratio` daba 100 tanto a *"jazz"* → "Jazz Classics" (correcto:
+pediste jazz y te ponen jazz) como a *"loving machine de tv girl"* → "TV Girl"
+(un desastre), porque puntúa perfecto en cuanto uno de los dos es subconjunto
+del otro. Cubrir no es solaparse.
+
+La comparación por palabra suelta usa un umbral alto (90) para absorber cómo
+transcribe Whisper: a 85, "rock" casaba con "rocky" (88.9) y volvía a colarse la
+banda sonora. Ser estricto ahí es barato porque la cobertura ya es una fracción
+—una palabra mal transcrita de cuatro deja 0.75 y pasa igual—.
 
 ### Cerrar una app: el proceso se busca, no se deduce
 

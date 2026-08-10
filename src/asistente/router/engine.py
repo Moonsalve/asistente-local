@@ -4,8 +4,14 @@ Cada etapa es mas lenta y mas flexible que la anterior, y solo se ejecuta si la
 anterior no resolvio:
 
     1. literal   (< 0.001 s)  frases exactas del catalogo
+    1.5 patrones (< 0.001 s)  moldes sintacticos de alta precision
     2. semantica (0.01-0.02 s) coseno contra los ejemplos del catalogo
     3. LLM       (0.25-0.50 s) lo genuinamente nuevo o compuesto
+
+La etapa 1.5 existe para los comandos cuyo contenido discriminante es la FORMA
+y no el significado -"reproduce <titulo> de <artista>", donde el titulo es ruido
+para el encoder-. Va antes que la semantica precisamente porque su cometido es
+no dejar que el coseno opine sobre algo que no puede juzgar. Ver `patterns.py`.
 
 La metrica que gobierna la latencia media del sistema es el porcentaje de
 frases que llegan a la etapa 3. `RouteResult.stage` existe para poder medirlo:
@@ -20,6 +26,7 @@ from typing import Protocol
 
 from asistente.router.catalog import Catalog
 from asistente.router.literal import match_literal
+from asistente.router.patterns import match_pattern
 from asistente.router.schema import RouteResult, SpeechReply, Stage, ToolCall
 from asistente.router.semantic import SemanticMatcher, extract_slots
 from asistente.router.text import normalize
@@ -53,6 +60,19 @@ class Router:
             return RouteResult(
                 stage=Stage.LITERAL,
                 tool_call=call,
+                score=1.0,
+                latency_s=perf_counter() - started,
+            )
+
+        if (hit := match_pattern(self._catalog, normalized)) is not None:
+            intent, slots = hit
+            # Los slots del patron mandan, y `extract_slots` rellena lo que
+            # falte: el patron sabe donde empieza el titulo, pero el intent
+            # puede tener ademas regex para argumentos independientes.
+            slots = {**(extract_slots(self._catalog, intent, normalized) or {}), **slots}
+            return RouteResult(
+                stage=Stage.PATTERN,
+                tool_call=self._build_call(intent, slots),
                 score=1.0,
                 latency_s=perf_counter() - started,
             )

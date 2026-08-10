@@ -120,8 +120,98 @@ intents:
       - paralo
     confirmation: null
 
+  # ORDEN IMPORTANTE: este intent va ANTES que spotify.play porque sus `patterns`
+  # se prueban en el orden del YAML y "pon mis me gusta" tiene que reclamarse a
+  # si mismo antes de que la regla generica de spotify.play lo tome por el titulo
+  # de una cancion.
+  #
+  # Tus Me Gusta no son una playlist y no se pueden buscar: ver skills/spotify.py.
+  #
+  # OJO CON LA NEGACION AL REVES: este intent ("pon mis me gusta", reproducir la
+  # coleccion) y spotify.like ("me gusta esta cancion", guardar la actual)
+  # comparten las palabras que mas pesan y significan cosas opuestas -uno lee la
+  # lista, el otro escribe en ella-. Los dos necesitan anclas abundantes; al
+  # tocar cualquiera de las dos listas hay que medir la otra.
+  spotify.liked:
+    tool: spotify.liked
+    literal:
+      - pon mis me gusta
+      - reproduce mis me gusta
+    patterns:
+      # Anclado a $ y con determinante obligatorio detras del verbo, para que no
+      # se lleve un titulo que contenga las mismas palabras: "pon me gustas tu"
+      # (Manu Chao) no casa porque "me" no es "mi"/"mis"/"la"/"lo", y "pon la
+      # cancion mis favoritas de X" tampoco porque despues del final habria
+      # texto.
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)\s+(?:me\s+)?(?:la\s+(?:lista|playlist)\s+de\s+)?(?:mis?|las?|lo)\s+[\w\s]*?\b(?:me\s+gusta[ns]?|favorit\w+|guardad\w+|likes?|di\s+like)\b\s*$'
+    examples:
+      - pon mis me gusta
+      - reproduce mis me gusta
+      - pon la playlist de mis me gusta
+      - pon la lista de mis me gusta
+      - pon mis canciones favoritas
+      - reproduce mis canciones favoritas
+      - pon las canciones que me gustan
+      - pon mis canciones guardadas
+      - reproduce mi musica guardada
+      - pon mis likes
+      - pon mis favoritas
+    confirmation: null
+
   spotify.play:
     tool: spotify.play
+    # PATRONES: ver router/patterns.py para por que esto no puede resolverlo el
+    # encoder. Resumen: en "reproduce loving machine de tv girl" el titulo son
+    # nombres propios que nunca ha visto, su vector es ruido, y el coseno lo
+    # mandaba a spotify.liked (0.461) o a media.play_pause (0.323). No es que
+    # falten anclas: es que no hay nada que anclar, porque el titulo cambia en
+    # cada peticion. Lo unico constante es el molde.
+    #
+    # Los grupos nombrados son los slots, y `artist` es una HIPOTESIS: que "X de
+    # Y" sea de verdad titulo y artista lo decide Spotify al buscarlo, no este
+    # regex. Si la busqueda con filtros no encuentra nada, la skill reintenta
+    # con la frase entera en texto libre.
+    patterns:
+      # 1) Con "cancion/tema/rola" y artista. Sin guardia: la palabra "cancion"
+      #    ya deja claro que no es un comando del asistente.
+      #    `query` GREEDY y `artist` perezoso -> se parte por el ULTIMO "de". En
+      #    espanol los titulos llevan "de" a menudo ("el dia que me quieras de
+      #    gardel") y los nombres de grupo casi nunca.
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar|escuchar)\s+(?:me\s+)?(?:la|el|una|un|mi)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
+      # 2) Con "cancion/tema/rola" y sin artista.
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar|escuchar)\s+(?:me\s+)?(?:la|el|una|un|mi)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+?)\s*$'
+      # 3) Playlist, album o "musica de X" dichos por su nombre. Va antes que
+      #    las genericas para que "pon MI playlist de gym" funcione pese a que
+      #    el guardia de aquellas bloquea "mi" (ver abajo).
+      #
+      #    El unico choque de su lista cerrada de sustantivos es "pon la MUSICA
+      #    AL treinta por ciento", que es volume.set; se descarta con un guardia
+      #    minimo en vez de con el guardia entero, que bloquearia "mi/mis".
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)\s+(?:me\s+)?(?!(?:la\s+)?musica\s+(?:al|en)\s)(?:la|el|las|los|un|una|mi|mis)?\s*(?P<kind>lista\s+de\s+reproduccion|playlist|album|disco|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
+      #
+      # 4) y 5) GENERICAS: "pon <lo que sea>", con y sin artista. Son las que
+      #    arreglan el caso reportado, y las unicas que necesitan guardia.
+      #
+      #    EL GUARDIA es el vocabulario que el asistente YA RECLAMA para si
+      #    (volumen, pausa, siguiente, aleatorio, mis me gusta...). No es una
+      #    lista de frases que haya que aprenderse: solo existe para que "pon el
+      #    volumen al 50" no acabe buscandose en Spotify. Sale de recorrer el
+      #    propio catalogo, y `tests/test_router.py` comprueba que sigue
+      #    cubriendolo entero: si un intent nuevo reclama otra forma con "pon",
+      #    el test lo caza en vez de dejarlo pasar en silencio.
+      #
+      #    Los verbos encliticos ("ponle", "ponla", "ponlo") quedan fuera a
+      #    proposito: se refieren a algo que ya suena, nunca piden una cancion.
+      #
+      #    Efecto lateral conocido: un titulo que empiece por "mi" ("pon mi
+      #    corazon encantado de X") queda bloqueado y cae al encoder. Se dice
+      #    con "pon la cancion ..." y lo coge el patron 1.
+      #    En la 4) el guardia lleva ademas `algo de` y `musica de`: son
+      #    coletillas de genero, no artistas. Sin eso, "pon algo de jazz" se
+      #    partia en query="algo" / artist="jazz" y no sonaba nada. Bloqueadas
+      #    aqui, caen a la 5), que si consume la coletilla y deja query="jazz".
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)\s+(?:me\s+)?(?!(?:mis?\b|lo\s+que\b|las?\s+canciones\s+(?:que|en)\b|la\s+(?:siguiente|anterior|que\s+sigue|pausa)\b|el\s+(?:volumen|sonido|audio|modo|aleatorio)\b|otra\s+(?:vez|cancion|rola|cosa)\b|en\s+(?:orden|desorden|aleatorio)\b|pausa\b|silencio\b|algo\s+de\b|musica\s+de\b|(?:la\s+)?musica\s+(?:al|en)\s|spotify\s+(?:al|en)\s))(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)\s+(?:me\s+)?(?!(?:mis?\b|lo\s+que\b|las?\s+canciones\s+(?:que|en)\b|la\s+(?:siguiente|anterior|que\s+sigue|pausa)\b|el\s+(?:volumen|sonido|audio|modo|aleatorio)\b|otra\s+(?:vez|cancion|rola|cosa)\b|en\s+(?:orden|desorden|aleatorio)\b|pausa\b|silencio\b|(?:la\s+)?musica\s+(?:al|en)\s|spotify\s+(?:al|en)\s))(?:algo\s+de\s+|musica\s+de\s+|a\s+)?(?P<query>.+?)\s*$'
     examples:
       - pon la playlist de rock
       - reproduce musica electronica
@@ -188,32 +278,6 @@ intents:
       # fonsi" en texto libre, que Spotify resuelve bien.
       - '^(?:quiero\s+escuchar|escuchar|pon|ponme|reproduce)\s+(?:a\s+|algo\s+de\s+|musica\s+de\s+)?(?P<query>.+?)\s*$'
     slots_required: true
-    confirmation: null
-
-  # Tus Me Gusta no son una playlist y no se pueden buscar: ver skills/spotify.py.
-  #
-  # OJO CON LA NEGACION AL REVES: este intent ("pon mis me gusta", reproducir la
-  # coleccion) y spotify.like ("me gusta esta cancion", guardar la actual)
-  # comparten las palabras que mas pesan y significan cosas opuestas -uno lee la
-  # lista, el otro escribe en ella-. Los dos necesitan anclas abundantes; al
-  # tocar cualquiera de las dos listas hay que medir la otra.
-  spotify.liked:
-    tool: spotify.liked
-    literal:
-      - pon mis me gusta
-      - reproduce mis me gusta
-    examples:
-      - pon mis me gusta
-      - reproduce mis me gusta
-      - pon la playlist de mis me gusta
-      - pon la lista de mis me gusta
-      - pon mis canciones favoritas
-      - reproduce mis canciones favoritas
-      - pon las canciones que me gustan
-      - pon mis canciones guardadas
-      - reproduce mi musica guardada
-      - pon mis likes
-      - pon mis favoritas
     confirmation: null
 
   # -------------------------------------------------------------------- volumen

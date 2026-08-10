@@ -77,6 +77,41 @@ _KINDS: dict[str, Kind] = {
 #: con "Rocky" (no comparten ninguna).
 PLAYLIST_THRESHOLD = 82.0
 
+#: Palabras que no aportan nada al comparar lo pedido con lo encontrado.
+_VACIAS = frozenset({"de", "del", "la", "el", "los", "las", "un", "una", "y", "a", "en"})
+
+#: Fraccion minima de las palabras dichas que tiene que aparecer en el
+#: resultado para darlo por bueno.
+#:
+#: EL PROBLEMA QUE RESUELVE: `search()` SIEMPRE devuelve algo. Pedir "loving
+#: machine de tv girl" y quedarse con el primer resultado significaba reproducir
+#: una playlist llamada "TV Girl" —que comparte dos palabras de cinco— y parecer
+#: que el comando habia funcionado. Ahora el resultado tiene que CUBRIR lo que
+#: se dijo, no simplemente solaparse con ello, y si nada lo cubre se dice que no
+#: se encontro en vez de poner otra cosa.
+#:
+#: La medida es direccional a proposito: "jazz" -> "Jazz Classics" cubre 1/1 y
+#: vale (pediste jazz y te ponen jazz), pero "loving machine de tv girl" ->
+#: "TV Girl" cubre 2/4 y no vale (pediste algo mucho mas concreto).
+#:
+#: 0.6 deja pasar 2 de 3 palabras y 3 de 5, y exige las dos cuando solo hay dos.
+MIN_COBERTURA = 0.6
+
+#: Similitud por palabra suelta, para absorber como transcribe Whisper
+#: ("machin" -> "machine", 92.3). Alto a proposito: medido, a 85 "rock" casaba
+#: con "rocky" (88.9) y volvia a colarse la banda sonora de Rocky.
+#:
+#: Ser estricto aqui es barato porque la COBERTURA ya es una fraccion: una
+#: palabra mal transcrita de cuatro deja 0.75 y pasa igual. Esta segunda capa
+#: solo tiene que salvar los casos de una o dos palabras, y ahi un falso
+#: positivo (sonar otra cosa) es peor que un falso negativo (repetir la orden).
+_SIMILITUD_PALABRA = 90
+
+#: Cuantos resultados se piden para poder ELEGIR el que mejor cubre en vez de
+#: quedarse con el primero. Cinco caben en la misma peticion y el ranking de
+#: Spotify rara vez pone el bueno mas abajo.
+_LIMITE_BUSQUEDA = 5
+
 #: Cuantos Me Gusta se ponen en cola. Una sola llamada a la API (el maximo por
 #: pagina es 50) y suficiente para un rato largo. Si tienes el aleatorio puesto
 #: en Spotify, se aplica a esta cola: no hace falta que lo toquemos nosotros.
@@ -87,6 +122,33 @@ LIKED_LIMIT = 50
 #: y quererla reproducir en el mismo minuto es raro; esperar medio segundo de
 #: mas en cada "pon mi playlist de X" no lo es.
 _PLAYLISTS_TTL_S = 600.0
+
+
+def cobertura(query: str, *campos: str) -> float:
+    """Que fraccion de lo que se pidio aparece en el resultado (0-1).
+
+    Se compara palabra a palabra y no con una similitud global porque la
+    pregunta es direccional: importa si el resultado contiene lo que dijiste, no
+    si se parecen en conjunto. `token_set_ratio` daba 100 tanto a
+    "jazz" -> "Jazz Classics" (correcto) como a
+    "loving machine de tv girl" -> "TV Girl" (un desastre): en cuanto uno de los
+    dos es subconjunto del otro, puntua perfecto en las dos direcciones.
+    """
+    pedidas = [p for p in normalize(query).split() if p and p not in _VACIAS]
+    if not pedidas:
+        return 0.0
+
+    disponibles = {p for p in normalize(" ".join(campos)).split() if p}
+    if not disponibles:
+        return 0.0
+
+    aciertos = sum(
+        1
+        for palabra in pedidas
+        if palabra in disponibles
+        or any(fuzz.ratio(palabra, otra) >= _SIMILITUD_PALABRA for otra in disponibles)
+    )
+    return aciertos / len(pedidas)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,12 +269,14 @@ class SpotifyClient:
                 return PlayOutcome(True, label=nombre)
 
             for buscar, clave in self._search_order(kind):
-                if (uri := self._first_uri(query, buscar, clave)) is None:
+                if (hallado := self._best_match(query, query, buscar, clave)) is None:
                     continue
+                nombre, uri = hallado
                 if buscar == "track":
                     self._client.start_playback(device_id=device, uris=[uri])
                 else:
                     self._client.start_playback(device_id=device, context_uri=uri)
+                log.info("%r -> %s %r", query, buscar, nombre)
                 return _OK
         except Exception:
             log.exception("fallo la reproduccion de %r", query)
@@ -232,32 +296,75 @@ class SpotifyClient:
             return por_tipo[kind]
         return (("playlist", "playlists"), ("album", "albums"), ("track", "tracks"))
 
-    def _first_uri(self, query: str, kind: str, key: str) -> str | None:
-        """URI del primer resultado. La API devuelve `None` entre los items."""
-        assert self._client is not None
-        results = self._client.search(q=query, type=kind, limit=1)
-        items = (results or {}).get(key, {}).get("items") or []
-        for item in items:
-            if item and item.get("uri"):
-                return str(item["uri"])
-        return None
+    def _best_match(
+        self,
+        consulta: str,
+        pedido: str,
+        kind: str,
+        key: str,
+    ) -> tuple[str, str] | None:
+        """`(nombre, uri)` del resultado que mejor cubre lo pedido, o None.
 
-    def _play_track(self, device: str, title: str, artist: str) -> PlayOutcome:
-        """"Pon la cancion X de Y". Dos intentos, y el orden no es cosmetico.
+        `consulta` es lo que se le manda a la API (puede llevar filtros de
+        campo) y `pedido` es lo que dijo el usuario, que es contra lo que hay
+        que comprobar. No son lo mismo: `track:"la bamba" artist:"los lobos"` no
+        se parece a nada escrito por una persona.
 
-        Primero con filtros de campo (`track:"X" artist:"Y"`), que es lo que
-        impide que "de" o el nombre del grupo se traten como parte del titulo.
-        Si eso no devuelve nada -pasa cuando Whisper transcribe el nombre algo
-        distinto de como esta escrito en Spotify- se reintenta en texto libre,
-        que es mas tolerante a la diferencia de una letra.
+        Quedarse con el primer resultado era el fallo: `search()` siempre
+        devuelve algo, asi que "loving machine de tv girl" acababa reproduciendo
+        una playlist llamada "TV Girl" y pareciendo que habia funcionado.
+        Devolver None y decir "no lo encontre" es mucho mas util que sonar algo
+        que no se pidio.
         """
         assert self._client is not None
-        intentos = (f'track:"{title}" artist:"{artist}"', f"{title} {artist}")
+        results = self._client.search(q=consulta, type=kind, limit=_LIMITE_BUSQUEDA)
+        items = (results or {}).get(key, {}).get("items") or []
+
+        mejor: tuple[str, str] | None = None
+        mejor_score = MIN_COBERTURA
+        for item in items:
+            if not item or not item.get("uri"):
+                continue
+            nombre = str(item.get("name", ""))
+            # En una cancion, el artista es parte de lo que se pidio: sin el,
+            # "la bamba de los lobos" solo cubriria la mitad de las palabras.
+            artistas = " ".join(a.get("name", "") for a in item.get("artists") or [])
+            if (score := cobertura(pedido, nombre, artistas)) >= mejor_score:
+                mejor, mejor_score = (nombre, str(item["uri"])), score
+
+        if mejor is None and items:
+            log.debug("%r: %d resultados de tipo %s, ninguno cubre lo pedido",
+                      pedido, len(items), kind)
+        return mejor
+
+    def _play_track(self, device: str, title: str, artist: str) -> PlayOutcome:
+        """"Pon la cancion X de Y". Tres intentos, y el orden no es cosmetico.
+
+        1. Filtros de campo (`track:"X" artist:"Y"`): lo mas preciso, y lo unico
+           que impide que el nombre del grupo se trate como parte del titulo.
+        2. Texto libre "X Y": mas tolerante cuando Whisper transcribe el nombre
+           algo distinto de como esta escrito en Spotify.
+        3. Texto libre "X de Y", la frase tal cual se dijo. Es la red de
+           seguridad de la HIPOTESIS del router: partir por el ultimo "de"
+           acierta casi siempre, pero un titulo como "el dia que me quieras de
+           gardel" cantado por un grupo con "de" en el nombre se parte mal, y
+           entonces lo unico que queda es buscar la frase entera.
+
+        Los tres se comprueban contra lo que dijo el usuario: un resultado que
+        no cubra sus palabras se descarta, aunque Spotify lo haya devuelto.
+        """
+        assert self._client is not None
+        pedido = f"{title} {artist}"
+        intentos = (f'track:"{title}" artist:"{artist}"', pedido, f"{title} de {artist}")
         try:
             for consulta in intentos:
-                if (uri := self._first_uri(consulta, "track", "tracks")) is not None:
-                    self._client.start_playback(device_id=device, uris=[uri])
-                    return PlayOutcome(True, label=f"{title}, de {artist}")
+                hallado = self._best_match(consulta, pedido, "track", "tracks")
+                if hallado is None:
+                    continue
+                nombre, uri = hallado
+                self._client.start_playback(device_id=device, uris=[uri])
+                log.info("%r de %r -> %r", title, artist, nombre)
+                return PlayOutcome(True, label=f"{title}, de {artist}")
         except Exception:
             log.exception("fallo la reproduccion de %r de %r", title, artist)
             return PlayOutcome(False, "error")

@@ -19,6 +19,7 @@ class Stage(StrEnum):
     """Etapa del router que resolvio la frase. Se registra para el benchmark."""
 
     LITERAL = "literal"
+    PATTERN = "pattern"
     SEMANTIC = "semantic"
     LLM = "llm"
 
@@ -79,6 +80,21 @@ class IntentSpec(BaseModel):
     # coseno, la frase escala al LLM. Ver la nota de diseno en `semantic.py`
     # sobre por que esto sustituye al umbral absoluto.
     fallback: bool = False
+    # Regex que DECIDEN el intent, no que extraen de uno ya decidido. Existen
+    # para las frases cuyo contenido discriminante es sintactico y no semantico:
+    # en "reproduce loving machine de tv girl" lo unico reconocible es el molde,
+    # porque el titulo son nombres propios que el encoder nunca ha visto y su
+    # vector es practicamente ruido.
+    #
+    # Se prueban despues de la etapa literal y antes de la semantica, en el
+    # orden en que aparecen los intents en el YAML: lo especifico tiene que ir
+    # declarado antes que lo generico. Sus grupos nombrados se usan como slots.
+    #
+    # Alto coste de equivocarse: un patron aqui se salta el juicio del encoder,
+    # asi que solo deben declararse los que sean de precision practicamente
+    # total. `tests/test_router.py` comprueba que ninguno reclama frases de
+    # otro intent del catalogo.
+    patterns: tuple[str, ...] = ()
     # Regex con grupos nombrados para extraer argumentos de la frase original.
     # Se prueban en orden; el primero que casa gana.
     slot_patterns: tuple[str, ...] = ()

@@ -35,6 +35,8 @@ class Catalog:
     literal_index: dict[str, str]
     #: regex compilados por intent, en el orden declarado
     slot_regexes: dict[str, tuple[re.Pattern[str], ...]]
+    #: (regex, intent) que deciden el intent por si solos, en orden de catalogo
+    command_patterns: tuple[tuple[re.Pattern[str], str], ...]
     #: matriz (n_ejemplos, dim) ya centrada y renormalizada
     embeddings: np.ndarray
     #: nombre de intent para cada fila de `embeddings`
@@ -110,6 +112,19 @@ def load_catalog(path: Path | str, embedder: Embedder) -> Catalog:
         if spec.slots_required and not compiled:
             raise CatalogError(f"intent '{name}': slots_required=true pero no hay slot_patterns")
 
+    # El orden es el del YAML y es significativo: el primero que casa decide.
+    # Un intent especifico ("pon mis me gusta") tiene que estar declarado antes
+    # que uno generico ("pon <lo que sea>").
+    command_patterns: list[tuple[re.Pattern[str], str]] = []
+    for name, spec in intents.items():
+        if spec.fallback and spec.patterns:
+            raise CatalogError(f"intent '{name}': un fallback no puede tener patterns")
+        for pattern in spec.patterns:
+            try:
+                command_patterns.append((re.compile(pattern, flags=re.IGNORECASE), name))
+            except re.error as exc:
+                raise CatalogError(f"intent '{name}': pattern invalido {pattern!r}: {exc}") from exc
+
     # Un solo batch de encoding para todo el catalogo: mucho mas rapido que
     # frase a frase, y solo ocurre al arrancar.
     examples: list[str] = []
@@ -128,6 +143,7 @@ def load_catalog(path: Path | str, embedder: Embedder) -> Catalog:
         intents=intents,
         literal_index=literal_index,
         slot_regexes=slot_regexes,
+        command_patterns=tuple(command_patterns),
         embeddings=(centered / norms).astype(np.float32),
         example_owners=tuple(owners),
         mean=mean,
