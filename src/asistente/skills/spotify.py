@@ -117,6 +117,21 @@ _LIMITE_BUSQUEDA = 5
 #: en Spotify, se aplica a esta cola: no hace falta que lo toquemos nosotros.
 LIKED_LIMIT = 50
 
+#: Cuantos Me Gusta se leen para poder BUSCAR dentro de ellos. Nada que ver con
+#: el limite de arriba: aquello es lo que se pone en cola, esto es el indice
+#: contra el que se emparejan los titulos. 20 peticiones en el peor caso, una
+#: sola vez al arrancar.
+LIKED_INDEX_LIMIT = 1000
+
+#: Similitud minima (0-100) para dar por buena una cancion de TU biblioteca.
+#:
+#: Mas permisivo que el catalogo publico a proposito, y por dos razones: el
+#: espacio de busqueda es de unos cientos de canciones tuyas en vez de millones,
+#: asi que un falso positivo es mucho menos probable; y es justo aqui donde hay
+#: que absorber los destrozos de Whisper con los titulos en ingles
+#: ("Ponlobes Rock" por "pon Lovers Rock").
+LIBRARY_THRESHOLD = 72.0
+
 #: Vida del cache de tus playlists. Enumerarlas cuesta una peticion por cada 50,
 #: y eso esta en la ruta critica de un comando de voz. Crear una playlist nueva
 #: y quererla reproducir en el mismo minuto es raro; esperar medio segundo de
@@ -149,6 +164,52 @@ def cobertura(query: str, *campos: str) -> float:
         or any(fuzz.ratio(palabra, otra) >= _SIMILITUD_PALABRA for otra in disponibles)
     )
     return aciertos / len(pedidas)
+
+
+def similitud(pedido: str, candidato: str) -> float:
+    """Cuanto se parecen "titulo artista" pedido y candidato (0-100).
+
+    DOS MEDIDAS, y la segunda no es redundante:
+
+    - `token_sort_ratio` ordena las palabras antes de comparar, asi que da igual
+      si se dijo el artista primero o si sobra un "de", y sigue siendo sensible
+      a las letras.
+    - La misma comparacion SIN ESPACIOS. Hace falta porque Whisper no solo
+      cambia letras: PEGA PALABRAS entre si. "nothing else matters" salio como
+      "no tinelsmatters", y ahi cualquier medida por tokens se hunde
+      (`token_sort` 50.9) mientras que sin espacios sube a 92.0.
+
+    Se toma el maximo: son dos formas de romperse distintas y basta con
+    sobrevivir a una.
+
+    MEDIDO con transcripciones reales de `say` en voces espanolas contra una
+    biblioteca de prueba: el peor acierto puntua 91.9 y el mejor fallo, 65.0.
+
+    `token_set_ratio` NO vale aqui, aunque si valga para las playlists: premia
+    las subcadenas, y con una biblioteca entera delante "rock" casaria al 100
+    con "Lovers Rock".
+    """
+    return max(
+        fuzz.token_sort_ratio(pedido, candidato),
+        fuzz.ratio(pedido.replace(" ", ""), candidato.replace(" ", "")),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class LikedTrack:
+    """Una cancion de tus Me Gusta, lista para emparejar."""
+
+    name: str
+    artists: str
+    uri: str
+
+    @property
+    def searchable(self) -> str:
+        return normalize(f"{self.name} {self.artists}")
+
+    @property
+    def label(self) -> str:
+        return f"{self.name}, de {self.artists}" if self.artists else self.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +252,9 @@ class SpotifyClient:
         #: (nombre, uri) de tus playlists, y cuando se leyeron.
         self._playlists: tuple[tuple[str, str], ...] = ()
         self._playlists_at = 0.0
+        #: (texto buscable, nombre, artistas, uri) de tus Me Gusta.
+        self._liked: tuple[LikedTrack, ...] = ()
+        self._liked_at = 0.0
 
     @property
     def available(self) -> bool:
@@ -217,6 +281,25 @@ class SpotifyClient:
             self._client = None
             return False
         return True
+
+    def warmup(self) -> None:
+        """Trae de tu cuenta lo que hace falta para buscar, al arrancar.
+
+        Indexar los Me Gusta son hasta 20 peticiones y listar las playlists unas
+        pocas mas. Pagarlo aqui y no en el primer "pon X" es la misma razon por
+        la que se calientan Whisper, Piper y el LLM: el coste existe igual, y en
+        mitad de un comando se oye.
+        """
+        if self._client is None:
+            return
+        started = time.perf_counter()
+        liked, playlists = self.liked_tracks(force=True), self.own_playlists(force=True)
+        log.info(
+            "spotify: %d me gusta y %d playlists indexados en %.1f s",
+            len(liked),
+            len(playlists),
+            time.perf_counter() - started,
+        )
 
     def _active_device(self) -> str | None:
         if self._client is None:
@@ -257,6 +340,21 @@ class SpotifyClient:
             return PlayOutcome(False, "sin_spotify")
         if (device := self._active_device()) is None:
             return PlayOutcome(False, "sin_dispositivo")
+
+        # TUS ME GUSTA PRIMERO, y no es solo una preferencia: es tambien donde
+        # se absorbe lo que Whisper destroza. Un titulo en ingles dicho en
+        # espanol sale transcrito como suena ("Ponlobes Rock" por "pon Lovers
+        # Rock"), y con eso la Web API no encuentra nada — pero contra unos
+        # cientos de canciones TUYAS, un emparejamiento difuso si acierta.
+        pedido = f"{query} de {artist}" if artist else query
+        if (mia := self.find_liked(query, artist)) is not None:
+            try:
+                self._client.start_playback(device_id=device, uris=[mia.uri])
+            except Exception:
+                log.exception("fallo la reproduccion de %r desde tus me gusta", pedido)
+                return PlayOutcome(False, "error")
+            log.info("%r -> me gusta %r", pedido, mia.label)
+            return _OK
 
         # Con artista no hay ambiguedad posible: se pidio una cancion concreta.
         if artist:
@@ -397,6 +495,99 @@ class SpotifyClient:
             log.exception("no se pudieron reproducir los me gusta")
             return PlayOutcome(False, "error")
         return PlayOutcome(True, label="tus me gusta")
+
+    # ----------------------------------------------------------- tus me gusta
+
+    def liked_tracks(self, force: bool = False) -> tuple[LikedTrack, ...]:
+        """Tus Me Gusta como indice buscable, cacheados `_PLAYLISTS_TTL_S`.
+
+        Se leen hasta `LIKED_INDEX_LIMIT` en paginas de 50. Es la parte cara de
+        todo esto (hasta 20 peticiones), por eso `warmup()` la paga al arrancar
+        y no en mitad de un comando.
+        """
+        if self._client is None:
+            return ()
+        fresco = time.monotonic() - self._liked_at < _PLAYLISTS_TTL_S
+        if not force and self._liked and fresco:
+            return self._liked
+
+        encontradas: list[LikedTrack] = []
+        try:
+            for offset in range(0, LIKED_INDEX_LIMIT, 50):
+                page = self._client.current_user_saved_tracks(limit=50, offset=offset)
+                items = (page or {}).get("items") or []
+                for item in items:
+                    track = (item or {}).get("track") or {}
+                    if not track.get("uri") or not track.get("name"):
+                        continue
+                    artistas = ", ".join(a.get("name", "") for a in track.get("artists") or [])
+                    encontradas.append(
+                        LikedTrack(
+                            name=str(track["name"]),
+                            artists=artistas,
+                            uri=str(track["uri"]),
+                        )
+                    )
+                if len(items) < 50:
+                    break
+        except Exception:
+            log.exception("no se pudieron leer tus me gusta")
+            return self._liked
+
+        self._liked = tuple(encontradas)
+        self._liked_at = time.monotonic()
+        log.debug("me gusta indexados: %d", len(self._liked))
+        return self._liked
+
+    def find_liked(self, query: str, artist: str | None = None) -> LikedTrack | None:
+        """La cancion de tus Me Gusta que mejor case con lo pedido, o None."""
+        pedido = normalize(f"{query} {artist}" if artist else query)
+        if not pedido:
+            return None
+
+        mejor: LikedTrack | None = None
+        mejor_score = LIBRARY_THRESHOLD
+        for track in self.liked_tracks():
+            if (score := similitud(pedido, track.searchable)) >= mejor_score:
+                mejor, mejor_score = track, score
+        if mejor is not None:
+            log.debug("me gusta %r -> %r (%.0f)", pedido, mejor.label, mejor_score)
+        return mejor
+
+    def hotwords(self, limit: int = 60) -> str:
+        """Vocabulario de TU cuenta para sesgar el decodificador de Whisper.
+
+        MEDIDO (24 clips de titulos en ingles dichos por voces en espanol,
+        Whisper small en CPU, que es el caso que fallaba):
+
+            sin hotwords, beam=1   WER 39.6%
+            sin hotwords, beam=5   WER 38.4%   <- subir el beam NO sirve
+            con hotwords, beam=1   WER 33.4%   al mismo coste
+
+        Y en los titulos concretos la diferencia no es de grado:
+            "Lovin Machine"                -> "Loving Machine"
+            "Ponlobes Rock"                -> "Pon Lovers Rock"
+            "no-tinelsmatters de metalica" -> "Nothing Else Matters de Metallica"
+
+        Tiene sentido: el problema no es que Whisper oiga mal, es que "loving
+        machine" no es una secuencia probable en espanol y "lovin machine" si.
+        Decirle que existe basta para inclinar la balanza.
+
+        Se priorizan los ARTISTAS sobre los titulos porque se repiten -veinte
+        canciones de un grupo son un solo termino- y porque son el ancla que
+        arrastra al resto de la frase.
+        """
+        artistas: list[str] = []
+        titulos: list[str] = []
+        for track in self.liked_tracks():
+            for nombre in track.artists.split(", "):
+                if nombre and nombre not in artistas:
+                    artistas.append(nombre)
+            if track.name not in titulos:
+                titulos.append(track.name)
+
+        terminos = artistas[:limit] + titulos[: max(0, limit - len(artistas[:limit]))]
+        return ", ".join(terminos)
 
     # -------------------------------------------------------- tus playlists
 
@@ -643,10 +834,11 @@ class SpotifyPlaySkill(Skill):
         if not outcome.ok:
             que = f"{args.query} de {args.artist}" if args.artist else args.query
             return _no_sono(outcome, que)
-        # Con artista o con playlist propia se confirma: son los casos en los
-        # que puede haber sonado algo que no era, y oir el nombre lo delata al
-        # instante. Para "pon jazz" la musica ya es su propia confirmacion.
-        return SkillResult.says(f"{outcome.label}.") if outcome.label else SkillResult.silent()
+        # Silencio. La cancion empezando a sonar ya dice que se acerto, y decirlo
+        # ademas en voz alta se pisa con el principio de la propia cancion. Solo
+        # se habla cuando algo NO sale: `outcome.label` sigue existiendo porque
+        # es lo que se registra en el log.
+        return SkillResult.silent()
 
 
 class LikedSkill(Skill):

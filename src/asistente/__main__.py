@@ -94,12 +94,16 @@ def main() -> int:
 
     if config.spotify.enabled and spotify.available:
         log.info("conectando con Spotify...")
-        spotify.connect()
+        if spotify.connect() and not args.text:
+            # Indexar la biblioteca son hasta 20 peticiones; se pagan aqui por
+            # la misma razon que se calientan los modelos. En modo texto no
+            # merece la pena: no hay STT que sesgar ni latencia que esconder.
+            spotify.warmup()
 
     if args.text:
         return _run_text_mode(router, registry)
 
-    return _run_voice_mode(config, router, registry)
+    return _run_voice_mode(config, router, registry, spotify)
 
 
 def _run_text_mode(router: object, registry: object) -> int:
@@ -129,6 +133,29 @@ def _run_text_mode(router: object, registry: object) -> int:
             print(f"  resultado: ok={outcome.ok} {outcome.speech or ''}")
         else:
             print("  sin accion")
+
+
+def _bias_stt_with_your_music(config: Config, transcriber: object, spotify: object | None) -> None:
+    """Le pasa al STT los nombres de tu biblioteca de Spotify.
+
+    Es lo que arregla los titulos en ingles: medido, WER 39.6% -> 33.4% sin
+    coste de tiempo, mientras que subir `beam_size` no movia nada. Ver
+    `SttConfig.hotwords_from_spotify`.
+
+    Cualquier problema aqui degrada a "sin sesgo" y sigue: el asistente tiene
+    que arrancar aunque Spotify no responda.
+    """
+    from asistente.skills.spotify import SpotifyClient
+    from asistente.stt.transcriber import Transcriber
+
+    if not config.stt.hotwords_from_spotify or not isinstance(spotify, SpotifyClient):
+        return
+    assert isinstance(transcriber, Transcriber)
+    try:
+        if terminos := spotify.hotwords(limit=config.stt.hotwords_limit):
+            transcriber.set_hotwords(terminos)
+    except Exception:
+        log.exception("no se pudo sesgar el STT con tu biblioteca; se sigue sin ello")
 
 
 def _build_speaker_gate(config: Config) -> object | None:
@@ -164,7 +191,12 @@ def _build_speaker_gate(config: Config) -> object | None:
     return gate
 
 
-def _run_voice_mode(config: Config, router: object, registry: object) -> int:
+def _run_voice_mode(
+    config: Config,
+    router: object,
+    registry: object,
+    spotify: object | None = None,
+) -> int:
     from asistente.audio.capture import MicrophoneStream
     from asistente.audio.keyphrase import KeyphraseGate
     from asistente.audio.recorder import UtteranceRecorder
@@ -180,6 +212,7 @@ def _run_voice_mode(config: Config, router: object, registry: object) -> int:
 
     log.info("cargando whisper (%s)...", config.stt.model)
     transcriber = Transcriber(config.stt)
+    _bias_stt_with_your_music(config, transcriber, spotify)
     transcriber.warmup()
 
     speaker = Speaker(config.tts.voice_model, config.tts.speed)

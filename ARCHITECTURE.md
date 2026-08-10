@@ -175,6 +175,59 @@ regex independientes —*"pon el volumen de spotify al 45"* necesita uno para el
 nivel y otro para el destino— sin cambiar el comportamiento donde varios
 patrones son alternativas del mismo argumento.
 
+### Los títulos en inglés: el problema no era oír, era saber que existen
+
+Dichos por un hispanohablante, Whisper los transcribe como suenan: *"Lovin
+Machine"*, *"Ponlobes Rock"*, *"no-tinelsmatters de metálica"*. Con eso la Web
+API no encuentra nada, porque no es así como están escritos.
+
+Medido sobre 24 clips (`say` en voces ES diciendo títulos en inglés, Whisper
+small en CPU):
+
+| Configuración | WER | Coste |
+|---|---|---|
+| `beam_size=1` | 39.6% | — |
+| `beam_size=5` | 38.4% | +7% |
+| `beam_size=1` + hotwords | **33.4%** | igual que beam=1 |
+| `beam_size=5` + hotwords | 27.9% | +68% |
+
+**Subir `beam_size` no sirve.** Cuando el modelo no sabe que una secuencia
+existe, buscar más caminos no la encuentra: *"loving machine"* no es probable en
+español y *"lovin machine"* sí. Lo que sí funciona es **decírselo**, y en los
+títulos concretos la diferencia no es de grado:
+
+```
+"Lovin Machine"                 -> "Loving Machine"
+"Ponlobes Rock"                 -> "Pon Lovers Rock"
+"no-tinelsmatters de metálica"  -> "Nothing Else Matters de Metallica"
+```
+
+Los `hotwords` salen de **su propia biblioteca de Spotify**: artistas primero
+(se repiten —veinte canciones de un grupo son un solo término— y son el ancla
+que arrastra al resto de la frase) y luego títulos, hasta 60 términos, porque
+Whisper acota el contexto del prompt a ~224 tokens.
+
+### Y la segunda red: buscar primero en tu biblioteca
+
+El sesgo mejora la transcripción pero no la vuelve perfecta. La otra mitad es no
+depender de ella: **tus Me Gusta se buscan antes que el catálogo**. Contra unos
+cientos de canciones tuyas, un emparejamiento difuso acierta donde la Web API no
+tiene nada que hacer.
+
+La similitud es el máximo de dos medidas, y la segunda no es redundante:
+
+- `token_sort_ratio`, que ordena las palabras antes de comparar, así que da
+  igual el orden o un "de" de más;
+- **la misma comparación sin espacios**, porque Whisper no solo cambia letras:
+  pega palabras. *"nothing else matters"* salió como *"no tinelsmatters"*, donde
+  cualquier medida por tokens se hunde (`token_sort` 50.9) y sin espacios sube a
+  92.0.
+
+Medido sobre transcripciones reales: el peor acierto puntúa 91.9 y el mejor
+fallo 65.0, con el umbral en 72. `token_set_ratio` **no** vale aquí aunque sí
+valga para las playlists: premia las subcadenas, y con una biblioteca entera
+delante *"rock"* casaría al 100 con "Lovers Rock".
+
 ### Hay frases sin significado que juzgar
 
 *"Reproduce loving machine de tv girl"*. El título y el grupo son nombres

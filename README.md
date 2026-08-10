@@ -15,7 +15,7 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 3 etapas + skills | **Hecha y verificada** (296 tests) |
+| 2 | Router de 4 etapas + skills | **Hecha y verificada** (307 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 5 | Benchmark y tuning | Pendiente |
@@ -100,7 +100,7 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 282 tests, ~3 s
+PYTHONPATH=src pytest -q                           # 307 tests, ~4 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
 PYTHONPATH=src python scripts/diagnose_apps.py     # qué apps se abren y cuáles se cierran
 PYTHONPATH=src python scripts/diagnose_spotify.py  # dispositivos, tus playlists, me gusta
@@ -261,6 +261,18 @@ en texto libre, y por último con la frase entera tal cual la dijiste.
 funciona igual que *"pon la canción loving machine de tv girl"*: la primera la
 resuelve la etapa de patrones por su forma, porque un título que el modelo no ha
 visto nunca no se puede clasificar por significado (ver `ARCHITECTURE.md`).
+
+**Tus Me Gusta se buscan primero.** Antes que tus playlists y antes que el
+catálogo público. Además de ser lo que sueles querer, es donde se absorben los
+títulos que Whisper transcribe mal: contra unos cientos de canciones tuyas, un
+emparejamiento difuso acierta donde la Web API no encontraría nada.
+
+**Los títulos en inglés.** Dichos en español salían como *"Lovin Machine"* o
+*"Ponlobes Rock"*, y así no hay búsqueda que valga. Al arrancar, el asistente le
+pasa a Whisper los nombres de **tu** biblioteca (artistas y títulos) para sesgar
+la transcripción, y con eso salen exactos. Medido: WER 39.6% → 33.4% sin coste
+de tiempo; subir `beam_size` no servía de nada (39.6% → 38.4%). Se desactiva con
+`stt: {hotwords_from_spotify: false}` en `config.local.yaml`.
 
 **Si no encuentra lo que pediste, lo dice.** Antes se quedaba con el primer
 resultado de la búsqueda, y como `search()` siempre devuelve algo, pedir *"loving

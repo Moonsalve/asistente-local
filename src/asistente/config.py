@@ -106,7 +106,38 @@ class SttConfig(BaseModel):
     language: str = "es"
     #: Greedy en vez de beam search: ahorra 30-40% del tiempo con perdida
     #: despreciable en frases cortas de comando.
+    #:
+    #: MEDIDO, y por eso sigue en 1: sobre 24 clips de titulos en ingles dichos
+    #: en espanol -el caso que peor se transcribia- subirlo a 5 movio el WER de
+    #: 39.6% a 38.4%, o sea nada, a cambio de mas tiempo. Lo que si lo movio
+    #: fueron los `hotwords` (ver abajo). Cuando el modelo no sabe que una
+    #: secuencia existe, buscar mas caminos no la encuentra.
     beam_size: int = 1
+
+    #: Sesga el decodificador con los nombres de TU biblioteca de Spotify:
+    #: artistas primero y titulos despues. Es lo unico que hizo mejorar de
+    #: verdad la transcripcion de titulos en ingles.
+    #:
+    #: MEDIDO (24 clips, Whisper small en CPU, voces en espanol diciendo
+    #: titulos en ingles):
+    #:     sin hotwords, beam=1   WER 39.6%
+    #:     sin hotwords, beam=5   WER 38.4%
+    #:     con hotwords, beam=1   WER 33.4%   mismo coste que beam=1 a secas
+    #: Y en los titulos concretos no es una mejora de grado:
+    #:     "Lovin Machine"      -> "Loving Machine"
+    #:     "Ponlobes Rock"      -> "Pon Lovers Rock"
+    #:     "no-tinelsmatters"   -> "Nothing Else Matters"
+    #:
+    #: El problema no era que Whisper oyera mal, sino que "loving machine" no es
+    #: una secuencia probable en espanol y "lovin machine" si. Basta con decirle
+    #: que existe.
+    #:
+    #: Ponlo en false si no usas Spotify o si notas que arrastra los comandos
+    #: normales hacia nombres propios.
+    hotwords_from_spotify: bool = True
+    #: Cuantos terminos como maximo. Whisper acota el contexto del prompt a unos
+    #: 224 tokens; pasarse de ahi no anade nada y empieza a desplazar al audio.
+    hotwords_limit: int = Field(default=60, ge=0, le=200)
     #: Sin contexto entre turnos: cada comando es independiente, y arrastrar el
     #: anterior invita a alucinaciones.
     condition_on_previous_text: bool = False

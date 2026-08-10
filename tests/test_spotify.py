@@ -46,6 +46,7 @@ class FakeSpotify:
         #: lo que se llego a reproducir, para poder afirmar sobre ello
         self.reproducido: list[dict[str, Any]] = []
         self.busquedas: list[tuple[str, str]] = []
+        self.paginas_guardadas: list[int] = []
 
     def devices(self) -> dict[str, Any]:
         return {"devices": self._devices}
@@ -59,8 +60,17 @@ class FakeSpotify:
     def current_user_playlists(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         return {"items": self._playlists[offset : offset + limit]}
 
-    def current_user_saved_tracks(self, limit: int = 50) -> dict[str, Any]:
-        return {"items": [{"track": {"uri": uri}} for uri in self._guardadas[:limit]]}
+    def current_user_saved_tracks(self, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        self.paginas_guardadas.append(offset)
+        ventana = self._guardadas[offset : offset + limit]
+        return {
+            "items": [
+                {"track": {"uri": uri, "name": nombre,
+                           "artists": [{"name": a} for a in artistas]}}
+                for uri, nombre, *artistas in (_guardada(g) for g in ventana)
+            ],
+            "total": len(self._guardadas),
+        }
 
     def start_playback(self, **kwargs: Any) -> None:
         self.reproducido.append(kwargs)
@@ -70,6 +80,11 @@ def _client(fake: FakeSpotify) -> SpotifyClient:
     client = SpotifyClient(Config(), Secrets())
     client._client = fake  # noqa: SLF001 - inyeccion deliberada en test
     return client
+
+
+def _guardada(entry: str | tuple[str, ...]) -> tuple[str, ...]:
+    """Un me gusta del doble: una URI suelta, o (uri, titulo, *artistas)."""
+    return (entry, "", ) if isinstance(entry, str) else entry
 
 
 def _uri(name: str, uri: str, *artistas: str) -> dict[str, Any]:
@@ -248,6 +263,111 @@ def test_null_items_from_the_api_do_not_crash() -> None:
     assert outcome.reason == "no_encontrado"
 
 
+# ----------------------------------------------------- buscar en tus me gusta
+#
+# Tu biblioteca va PRIMERO y no es solo una preferencia: es donde se absorbe lo
+# que Whisper destroza. Un titulo en ingles dicho en espanol sale transcrito
+# como suena, y con eso la Web API no encuentra nada; contra unos cientos de
+# canciones tuyas, un emparejamiento difuso si acierta.
+
+BIBLIOTECA = [
+    ("spotify:track:LM", "Loving Machine", "TV Girl"),
+    ("spotify:track:LR", "Lovers Rock", "TV Girl"),
+    ("spotify:track:NEM", "Nothing Else Matters", "Metallica"),
+    ("spotify:track:BL", "Blinding Lights", "The Weeknd"),
+    ("spotify:track:CN", "La Camisa Negra", "Juanes"),
+]
+
+
+def test_your_library_is_searched_before_the_catalog() -> None:
+    fake = FakeSpotify(
+        guardadas=BIBLIOTECA,
+        catalogo={"track:loving machine tv girl": [_uri("Otra", "spotify:track:NO", "Otro")]},
+    )
+    outcome = _client(fake).play_query("loving machine", artist="tv girl")
+
+    assert outcome.ok
+    assert fake.reproducido == [{"device_id": "PC", "uris": ["spotify:track:LM"]}]
+    assert not fake.busquedas, "si esta en tu biblioteca, no hace falta buscar fuera"
+
+
+@pytest.mark.parametrize(
+    ("dicho", "esperado"),
+    [
+        # Transcripciones REALES de `say` en voces españolas, medidas con
+        # Whisper small: es exactamente lo que le llega al asistente.
+        ("lovin machine de tv girl", "spotify:track:LM"),
+        ("lobes rock de tv girl", "spotify:track:LR"),
+        ("no tinelsmatters de metalica", "spotify:track:NEM"),
+        # Y lo que ya funcionaba tiene que seguir funcionando.
+        ("la camisa negra de juanes", "spotify:track:CN"),
+    ],
+)
+def test_a_mangled_english_title_still_finds_the_song(dicho: str, esperado: str) -> None:
+    """EL CASO REPORTADO. Ninguna de estas cadenas encuentra nada en la Web API,
+    porque no es asi como esta escrito el titulo. Contra la biblioteca de Juan
+    sí, porque el espacio de busqueda son sus canciones y no millones."""
+    fake = FakeSpotify(guardadas=BIBLIOTECA)
+    titulo, _, artista = dicho.partition(" de ")
+    outcome = _client(fake).play_query(titulo, artist=artista or None)
+
+    assert outcome.ok, f"{dicho!r} no encontro nada"
+    assert fake.reproducido[0]["uris"] == [esperado]
+
+
+def test_something_you_do_not_have_falls_through_to_the_catalog() -> None:
+    """Preferir tu biblioteca no puede significar quedarse encerrado en ella."""
+    fake = FakeSpotify(
+        guardadas=BIBLIOTECA,
+        catalogo={"playlist:jazz": [_uri("Jazz Classics", "spotify:playlist:PUB")]},
+    )
+    outcome = _client(fake).play_query("jazz")
+
+    assert outcome.ok
+    assert fake.reproducido[0]["context_uri"] == "spotify:playlist:PUB"
+
+
+def test_the_library_match_is_not_a_substring_match() -> None:
+    """El riesgo de bajar el umbral: con una biblioteca entera delante,
+    cualquier peticion corta casaria con la primera cancion que contenga esa
+    palabra. "rock" no puede convertirse en "Lovers Rock"."""
+    fake = FakeSpotify(guardadas=BIBLIOTECA)
+    assert _client(fake).find_liked("rock") is None
+
+
+def test_the_library_index_is_cached() -> None:
+    """Son hasta 20 peticiones: se pagan al arrancar, no en cada comando."""
+    fake = FakeSpotify(guardadas=BIBLIOTECA)
+    client = _client(fake)
+    client.liked_tracks()
+    antes = len(fake.paginas_guardadas)
+    client.liked_tracks()
+    assert len(fake.paginas_guardadas) == antes
+
+
+# ---------------------------------------------- sesgo del STT con tu música
+
+
+def test_hotwords_lead_with_the_artists() -> None:
+    """Los artistas se repiten -veinte canciones de un grupo son un solo
+    termino- y son el ancla que arrastra al resto de la frase."""
+    fake = FakeSpotify(guardadas=BIBLIOTECA)
+    terminos = _client(fake).hotwords().split(", ")
+
+    assert terminos[:4] == ["TV Girl", "Metallica", "The Weeknd", "Juanes"]
+    assert "Loving Machine" in terminos
+
+
+def test_hotwords_respect_the_limit() -> None:
+    """Whisper acota el contexto del prompt: pasarse desplaza al audio."""
+    fake = FakeSpotify(guardadas=BIBLIOTECA)
+    assert len(_client(fake).hotwords(limit=2).split(", ")) <= 4
+
+
+def test_hotwords_without_spotify_are_empty() -> None:
+    assert SpotifyClient(Config(), Secrets()).hotwords() == ""
+
+
 # ------------------------------------------------- el resultado tiene que valer
 #
 # `search()` SIEMPRE devuelve algo. Quedarse con el primero era lo que hacia que
@@ -358,15 +478,16 @@ def test_the_liked_skill_stays_quiet_when_it_works() -> None:
     assert LikedSkill(_client(fake)).execute(NoArgs()).speech is None
 
 
-def test_a_song_with_an_artist_is_confirmed_out_loud() -> None:
-    """Aqui si: es el caso donde puede haber sonado algo que no era, y oir el
-    nombre lo delata sin tener que mirar la pantalla."""
+def test_finding_a_song_says_nothing() -> None:
+    """Se hablaba para confirmar el titulo, y se pisaba con el principio de la
+    propia cancion. La musica sonando ya es la confirmacion; solo se habla
+    cuando algo NO sale."""
     fake = FakeSpotify(
         catalogo={"track:la bamba los lobos": [_uri("La Bamba", "spotify:track:OK", "Los Lobos")]}
     )
     result = SpotifyPlaySkill(_client(fake)).execute(PlayArgs(query="la bamba", artist="los lobos"))
     assert result.ok
-    assert "los lobos" in (result.speech or "")
+    assert result.speech is None
 
 
 # ----------------------------------------------------------- validacion de args

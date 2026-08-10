@@ -37,7 +37,13 @@ def main() -> int:
     args = parser.parse_args()
 
     from asistente.config import Config, Secrets
-    from asistente.skills.spotify import LIKED_LIMIT, PLAYLIST_THRESHOLD, SpotifyClient
+    from asistente.skills.spotify import (
+        LIBRARY_THRESHOLD,
+        LIKED_INDEX_LIMIT,
+        LIKED_LIMIT,
+        PLAYLIST_THRESHOLD,
+        SpotifyClient,
+    )
 
     config = Config.load(args.config)
     secrets = Secrets()
@@ -116,18 +122,42 @@ def main() -> int:
     elif total == 0:
         print(f"{AVISO} cero canciones guardadas: 'pon mis me gusta' no tendria que poner")
 
+    liked = client.liked_tracks(force=True)
+    if liked:
+        print(f"{OK} {len(liked)} indexadas para buscar dentro (tope {LIKED_INDEX_LIMIT})")
+        if total > LIKED_INDEX_LIMIT:
+            print(f"{AVISO} tienes {total}: las que pasen de {LIKED_INDEX_LIMIT} no se buscan.")
+
+    # --- sesgo del STT -----------------------------------------------------
+    print("\n" + "-" * 70)
+    print("SESGO DEL STT  (lo que arregla los titulos en ingles)")
+    terminos = client.hotwords()
+    if not terminos:
+        print(f"{AVISO} sin terminos: Whisper transcribira los titulos como suenan.")
+    else:
+        print(f"{OK} {terminos.count(',') + 1} nombres de tu biblioteca")
+        print(f"      {terminos[:200]}{'...' if len(terminos) > 200 else ''}")
+
     # --- emparejamiento ----------------------------------------------------
     if args.buscar:
         print("\n" + "-" * 70)
         print(f"EMPAREJAMIENTO DE '{args.buscar}'")
-        match = client.find_own_playlist(args.buscar)
-        if match is None:
-            print(f"{AVISO} ninguna de tus playlists pasa el umbral ({PLAYLIST_THRESHOLD:.0f}).")
-            print("      Se buscaria en el catalogo publico de Spotify.")
-            print("      El emparejamiento compara PALABRAS COMPLETAS: 'gym' no casa")
-            print("      con 'gimnasio'. Ponle a la playlist el nombre que dices en voz alta.")
+        print("Es lo que pasaria si lo dijeras (o si Whisper lo transcribiera) asi.\n")
+
+        cancion = client.find_liked(args.buscar)
+        if cancion is not None:
+            print(f"{OK} tu cancion '{cancion.label}'  (se busca aqui PRIMERO)")
         else:
+            print(f"     ninguna de tus canciones pasa el umbral ({LIBRARY_THRESHOLD:.0f})")
+
+        match = client.find_own_playlist(args.buscar)
+        if match is not None:
             print(f"{OK} tu playlist '{match[0]}'")
+        elif cancion is None:
+            print(f"{AVISO} tampoco ninguna playlist tuya.")
+            print(f"      (umbral de playlists {PLAYLIST_THRESHOLD:.0f}, compara PALABRAS")
+            print("      COMPLETAS: 'gym' no casa con 'gimnasio')")
+            print("      Se buscaria en el catalogo publico de Spotify.")
 
     print("\n" + "=" * 70)
     return 0
