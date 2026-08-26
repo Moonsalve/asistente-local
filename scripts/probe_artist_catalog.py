@@ -1,64 +1,61 @@
-"""¿Y si en vez de corregir el titulo, buscamos en el catalogo del artista?
+"""¿Y si en vez de corregir el titulo, lo buscamos dentro del artista?
 
 POR QUE ESTA SONDA
 ------------------
 Lo que hay hoy (`music_ai.py`) le pide al LLM que corrija {titulo, artista} y
 acepta la correccion si se parece a lo que se oyo. **Medido en el PC, no
-funciona**: una respuesta equivocada ("Nothing Matters" de Metallica, cuando es
-"Nothing ELSE Matters") puntuo 87, y una correcta ("Blinding Lights") puntuo
-72.7. Una mala saco mas nota que una buena, asi que ningun umbral las separa.
+funciona**: "Nothing Matters" de Metallica (mal, es "Nothing ELSE Matters")
+puntuo 87 y "Blinding Lights" (bien) puntuo 72.7. Una mala saco mas nota que
+una buena, asi que ningun umbral las separa.
 
-Pero esa misma tanda enseño donde SI hay señal: el modelo acerto **el artista 4
-de 5 veces** y **el titulo solo 2 de 5**. El artista es la parte fiable.
+Pero las tandas anteriores enseñaron donde SI hay señal:
 
-La idea a medir: usar el artista para traer sus canciones DE VERDAD desde
-Spotify, y emparejar contra esa lista el titulo tal como se oyo. Es la misma
-situacion en la que `similitud` si esta validada —texto destrozado contra un
-conjunto real y pequeño de titulos bien escritos, igual que tus me gusta, donde
-el peor acierto puntua 91.9 y el mejor fallo 65.0— en vez de contra lo que el
-modelo se imagine.
+  - **El LLM acierta el ARTISTA 4 de 5 veces** y el titulo solo 2 de 5. El
+    artista es un nombre que ha visto miles de veces; el titulo es lo que
+    alucina.
+  - **Spotify NO resuelve el artista fonetico**: "tibi guerl" -> TINI,
+    "uiquen" -> ChocQuibTown. Solo acierta cuando Whisper ya lo escribio bien.
+    Asi que el LLM no sobra: hace falta, pero para el artista.
 
-LAS TRES VIAS QUE SE COMPARAN, y la tercera es la importante
-------------------------------------------------------------
-    A) HOY          el LLM corrige titulo+artista, guardia, y se busca
-    B) LLM+CATALOGO el LLM da SOLO el artista; el titulo sale de sus canciones
-    C) SIN LLM      Spotify resuelve el artista el solo; el titulo, igual
+La idea es usar el artista —la parte fiable— para acotar la busqueda, y dejar
+que el titulo se resuelva dentro de ese espacio pequeño y real.
 
-**Si C acierta tanto como B, el LLM sobra en esta capa.** La vez pasada no se
-hizo esta pregunta y se implemento de mas.
+PRIMERO SE MIDE QUE PUEDE HACER ESTA APLICACION
+------------------------------------------------
+Dos intentos anteriores de esta sonda murieron por dar por supuesto lo que la
+API permite: `artist_top_tracks` devuelve 403 con esta aplicacion, y `search`
+rechaza `limit=50` **y tambien `limit=20`** con HTTP 400 "Invalid limit",
+aunque la documentacion de Spotify diga que el maximo es 50 y aunque
+`current_user_saved_tracks(limit=50)` si funcione.
 
-LO QUE YA SE MIDIO EN EL PC (2026-08-26, primera tanda)
---------------------------------------------------------
-**La via C se cae, y se cae en el artista.** La busqueda de Spotify no aguanta
-la fonetica espanola:
+Asi que ya no se supone nada: al arrancar se prueba de verdad que endpoints
+responden y cual es el `limit` mas alto que acepta la busqueda, y el resto de
+la sonda usa lo que haya salido. La tabla que imprime es en si misma un
+resultado, y vale para todo el proyecto.
 
-    "tibi guerl" -> TINI            (era TV Girl)
-    "uiquen"     -> ChocQuibTown    (era The Weeknd)
-    "metalica"   -> Metallica       correcto
-    "nirvana"    -> Nirvana         correcto
+LAS VIAS QUE SE COMPARAN
+------------------------
+    A) HOY        el LLM corrige titulo+artista, guardia, y se busca
+    B) CATALOGO   se traen las canciones del artista y se empareja en local
+    C) SIN LLM    Spotify resuelve el artista el solo (ya medido: se cae)
+    D) UNA SOLA   artista del LLM + titulo TAL COMO SE OYO, en una peticion
 
-Solo acierta cuando Whisper ya habia escrito bien el nombre. Asi que el LLM NO
-sobra: hace falta para el artista. La via B lo acerto 4 de 5, y el unico fallo
-fue donde el modelo hizo eco ("Tibi Guerl").
+**D es la nueva candidata y la barata.** En vez de traerse el catalogo entero
+para emparejar en casa, se le pasa a Spotify el artista como filtro de campo y
+el titulo destrozado como texto libre: `artist:"TV Girl" ponlobes rock`. El
+filtro reduce el espacio a las canciones de ese artista y la busqueda difusa
+solo tiene que acertar dentro de ahi. Una peticion en vez de varias paginas.
 
-Y una sorpresa a favor de lo que ya hay: en la via A, el LLM dijo "Nothing
-Matters" de Metallica —mal, es "Nothing ELSE Matters"— y la busqueda con
-filtros de campo mas la verificacion de cobertura **devolvieron la cancion
-correcta igualmente**. La red de abajo atrapa parte de lo que el guardia deja
-pasar.
-
-Queda por medir lo unico que no se pudo por dos fallos de esta sonda (403 en
-`artist_top_tracks` y HTTP 400 por pedir `limit=50`): **si el titulo bueno
-aparece entre las canciones que se traen del artista**, y a cuantas peticiones.
+Si D acierta tanto como B, gana D: menos peticiones, menos codigo y ninguna
+lista que mantener en memoria.
 
 Uso (en el PC, con Ollama y Spotify en marcha):
 
     python scripts/probe_artist_catalog.py
     python scripts/probe_artist_catalog.py "ponlobes rock de tv girl"
 
-**Pon canciones TUYAS, y sobre todo alguna que NO tengas en me gusta**, que es
-el caso que todo esto existe para arreglar. Saca las frases del log del
-asistente con `-v`: interesan como las oye Whisper, no como se escriben.
+**Pon canciones TUYAS, y sobre todo alguna que NO sea un exito del artista**:
+ahi es donde se vera si el catalogo llega o se queda corto.
 
 No reproduce nada: solo busca. Y no decide: enseña y decides tu.
 """
@@ -82,24 +79,18 @@ from asistente.skills.spotify import SpotifyClient, similitud  # noqa: E402
 
 MAL = " MAL "
 
-#: Tamano de pagina de la busqueda por artista.
-#:
-#: 20 y no 50: MEDIDO en el PC el 2026-08-26, `limit=50` devuelve HTTP 400
-#: "Invalid limit" pese a que la documentacion de Spotify da 50 como maximo del
-#: endpoint de busqueda. 20 es el valor por defecto y funciona.
-_PAGINA = 20
+#: Limites de busqueda que se prueban, de menor a mayor. El mayor que responda
+#: es el que se usa para paginar. No se supone ninguno: se mide.
+_ESCALERA = (1, 3, 5, 10, 20, 50)
 
-#: Techo de canciones que se traen por artista. Tres peticiones en el peor caso.
-#: Es una sonda: aqui interesa saber si el titulo bueno APARECE, y con cuantas
-#: peticiones hay que pagarlo. Ese coste es parte de la decision.
+#: Techo de canciones que se traen por artista. Con un `limit` pequeño esto son
+#: muchas peticiones, y ese coste es parte de la decision: se cuenta y se
+#: enseña. Si hacen falta diez peticiones, la via B no vale para voz.
 _MAX_CANCIONES = 60
 
-#: Los exitos del artista serian una sola peticion y cubririan lo que la gente
-#: pide normalmente, pero MEDIDO en el PC el 2026-08-26 el endpoint
-#: `/v1/artists/{id}/top-tracks` devuelve **403 Forbidden** para todos los
-#: artistas con esta aplicacion. Se sigue intentando —no cuesta nada y en otras
-#: cuentas funciona— pero ya no se depende de el.
-_TOP = 10
+#: Cuantas peticiones de catalogo se toleran antes de rendirse. Un comando de
+#: voz no puede pagar mas.
+_MAX_PETICIONES = 6
 
 EJEMPLOS = (
     "ponlobes rock de tv girl",
@@ -108,6 +99,15 @@ EJEMPLOS = (
     "blain ding lights de uiquen",
     "esmels laik tin espirit de nirvana",
 )
+
+
+def _http(exc: Exception) -> str:
+    """El codigo HTTP de un fallo de spotipy, sin las cuarenta lineas de URL."""
+    codigo = getattr(exc, "http_status", None)
+    crudo = str(getattr(exc, "msg", "") or exc).replace("\n", " ")
+    razon = " ".join(p for p in crudo.split() if "://" not in p)
+    razon = razon.removesuffix(", reason: None").strip(" -:")
+    return f"HTTP {codigo}: {razon[:50]}" if codigo else razon[:70]
 
 
 def _partir(frase: str) -> tuple[str, str | None]:
@@ -123,148 +123,199 @@ def _pista(item: dict[str, Any]) -> str:
     return f"{item.get('name', '?')} — {artistas}"
 
 
-def _resolver_artista(raw: Any, nombre: str) -> tuple[str, str] | None:
-    """`(id, nombre real)` del artista que Spotify cree que es ese, o None.
+def _items(res: Any, clave: str = "tracks") -> list[dict[str, Any]]:
+    return (res or {}).get(clave, {}).get("items") or []
 
-    Aqui es donde se ve si la busqueda difusa de Spotify aguanta un nombre
-    destrozado: "tibi guerl" -> TV Girl, o nada.
+
+# --------------------------------------------------------- que permite la API
+
+
+def _sondear_api(raw: Any) -> dict[str, Any]:
+    """Que puede hacer de verdad esta aplicacion. Medido, no supuesto.
+
+    Existe porque dos versiones de esta sonda murieron dando por buena la
+    documentacion de Spotify. Cuesta menos de diez peticiones, una vez.
     """
+    print("-" * 78)
+    print("QUE PERMITE ESTA APLICACION (medido ahora mismo)")
+    print("-" * 78)
+
+    capacidades: dict[str, Any] = {"search_limit": 0}
+
+    for limite in _ESCALERA:
+        try:
+            raw.search(q="nirvana", type="track", limit=limite)
+        except Exception as exc:
+            print(f"  search limit={limite:<3} MAL   {_http(exc)}")
+            break
+        capacidades["search_limit"] = limite
+        print(f"  search limit={limite:<3} OK")
+
+    if not capacidades["search_limit"]:
+        return capacidades
+
+    # Un artista cualquiera con el que probar los endpoints de artista.
+    artistas = _items(raw.search(q="nirvana", type="artist", limit=1), "artists")
+    if not artistas:
+        return capacidades
+    artist_id = str(artistas[0]["id"])
+
+    for nombre, llamada in (
+        ("artist_top_tracks", lambda: raw.artist_top_tracks(artist_id)),
+        ("artist_albums", lambda: raw.artist_albums(artist_id, limit=_maximo(capacidades))),
+    ):
+        try:
+            llamada()
+        except Exception as exc:
+            capacidades[nombre] = False
+            print(f"  {nombre:<20} MAL   {_http(exc)}")
+        else:
+            capacidades[nombre] = True
+            print(f"  {nombre:<20} OK")
+
+    print()
+    return capacidades
+
+
+def _maximo(capacidades: dict[str, Any]) -> int:
+    return int(capacidades.get("search_limit") or 1)
+
+
+# ------------------------------------------------------------ las cuatro vias
+
+
+def _resolver_artista(raw: Any, nombre: str) -> tuple[str, str] | None:
+    """`(id, nombre real)` del artista que Spotify cree que es ese, o None."""
     try:
-        res = raw.search(q=nombre, type="artist", limit=1)
+        items = _items(raw.search(q=nombre, type="artist", limit=1), "artists")
     except Exception as exc:
-        print(f"{MAL} error buscando el artista: {exc}")
+        print(f"{MAL} error buscando el artista: {_http(exc)}")
         return None
-    items = (res or {}).get("artists", {}).get("items") or []
     if not items:
         return None
     return str(items[0]["id"]), str(items[0].get("name", "?"))
 
 
-def _http(exc: Exception) -> str:
-    """El codigo HTTP de un fallo de spotipy, sin las cuarenta lineas de URL.
+def _cabecera_artista(pedido: str, real: str) -> bool:
+    """Enseña a que artista se ha ido Spotify. Devuelve si es creible.
 
-    El mensaje de spotipy mete la URL entera con sus parametros y ocupa media
-    pantalla; lo unico accionable es el codigo y la razon del final.
+    Va ANTES que la cancion a proposito: si el artista esta mal, lo de abajo ya
+    no significa nada. Es donde se cae la via C y con el nombre al final costaba
+    verlo.
     """
-    codigo = getattr(exc, "http_status", None)
-    crudo = str(getattr(exc, "msg", "") or exc).replace("\n", " ")
-    # Fuera la URL (es la mitad del mensaje) y la coletilla vacia del final.
-    razon = " ".join(p for p in crudo.split() if "://" not in p)
-    razon = razon.removesuffix(", reason: None").strip(" -:")
-    return f"HTTP {codigo}: {razon[:50]}" if codigo else razon[:70]
+    parecido = similitud(normalize(pedido), normalize(real))
+    vale = parecido >= 72
+    print(f"                      pidio {pedido!r} {'=' if vale else '!'}> "
+          f"Spotify da {real!r}  (parecido {parecido:.0f})")
+    if not vale:
+        print("                      ^^ OJO: no es el mismo artista.")
+    return vale
 
 
-def _canciones_del_artista(
-    raw: Any, artist_id: str, nombre: str
-) -> tuple[list[dict[str, Any]], list[str], int]:
-    """`(canciones, avisos, peticiones)` de ese artista, deduplicadas por nombre.
+def _ranking(oido: str, pistas: list[dict[str, Any]], cuantas: int = 3) -> None:
+    """Las mejores coincidencias con el titulo oido, para poder juzgarlas."""
+    puntuadas = sorted(
+        ((similitud(normalize(oido), normalize(str(t.get("name", "")))), t) for t in pistas),
+        key=lambda par: par[0],
+        reverse=True,
+    )
+    for i, (score, t) in enumerate(puntuadas[:cuantas]):
+        flecha = "->" if i == 0 else f"{i + 1}a:"
+        print(f"                      {flecha} {_pista(t)}   ({score:.1f})")
+    if len(puntuadas) > 1:
+        print(f"                      margen {puntuadas[0][0] - puntuadas[1][0]:+.1f}")
 
-    Si el titulo bueno no esta en esta lista, el emparejamiento no puede
-    acertar. Por eso interesa tanto CUANTAS se traen como a que precio: cada
-    pagina es una peticion en mitad de un comando de voz.
-    """
+
+def _via_catalogo(raw: Any, titulo: str, artista: str, cap: dict[str, Any]) -> None:
+    """B) Traerse las canciones del artista y emparejar en local."""
+    print("     B) CATALOGO")
+    inicio = time.perf_counter()
+    resuelto = _resolver_artista(raw, artista)
+    if resuelto is None:
+        print(f"                      Spotify no reconoce a {artista!r}")
+        return
+    artist_id, real = resuelto
+    _cabecera_artista(artista, real)
+
     encontradas: dict[str, dict[str, Any]] = {}
     avisos: list[str] = []
-    peticiones = 0
+    peticiones = 1
+    limite = _maximo(cap)
 
-    # Los exitos serian la fuente barata (una peticion), pero devuelven 403 con
-    # esta aplicacion. Se intenta igual: si algun dia vuelve, sale gratis.
-    try:
+    if cap.get("artist_top_tracks"):
         peticiones += 1
-        for t in raw.artist_top_tracks(artist_id).get("tracks", [])[:_TOP]:
-            encontradas.setdefault(normalize(str(t.get("name", ""))), t)
-    except Exception as exc:
-        avisos.append(f"sin exitos del artista ({_http(exc)})")
+        try:
+            for t in raw.artist_top_tracks(artist_id).get("tracks", []):
+                encontradas.setdefault(normalize(str(t.get("name", ""))), t)
+        except Exception as exc:
+            avisos.append(f"sin exitos ({_http(exc)})")
 
-    for offset in range(0, _MAX_CANCIONES, _PAGINA):
+    for offset in range(0, _MAX_CANCIONES, limite):
+        if peticiones >= _MAX_PETICIONES:
+            avisos.append(f"cortado en {_MAX_PETICIONES} peticiones: ya es demasiado para voz")
+            break
         try:
             peticiones += 1
-            res = raw.search(
-                q=f'artist:"{nombre}"', type="track", limit=_PAGINA, offset=offset
+            lote = _items(
+                raw.search(q=f'artist:"{real}"', type="track", limit=limite, offset=offset)
             )
         except Exception as exc:
             avisos.append(f"busqueda cortada en offset {offset} ({_http(exc)})")
             break
-        items = (res or {}).get("tracks", {}).get("items") or []
-        for t in items:
+        for t in lote:
             encontradas.setdefault(normalize(str(t.get("name", ""))), t)
-        if len(items) < _PAGINA:
+        if len(lote) < limite:
             break
 
-    return list(encontradas.values()), avisos, peticiones
-
-
-def _emparejar(oido: str, pistas: list[dict[str, Any]]) -> list[tuple[float, dict[str, Any]]]:
-    """Las canciones del artista ordenadas por parecido con el titulo oido."""
-    puntuadas = [
-        (similitud(normalize(oido), normalize(str(t.get("name", "")))), t) for t in pistas
-    ]
-    puntuadas.sort(key=lambda par: par[0], reverse=True)
-    return puntuadas
-
-
-def _via_catalogo(raw: Any, titulo_oido: str, artista: str, etiqueta: str) -> None:
-    """Imprime que sale de emparejar el titulo oido contra el catalogo real.
-
-    Se enseña el artista que sale ANTES que la cancion, y a proposito: si el
-    artista esta mal, lo de abajo ya no significa nada. MEDIDO en el PC, ahi es
-    donde se cae la via sin LLM ("tibi guerl" -> TINI, "uiquen" ->
-    ChocQuibTown), y con el nombre escondido al final costaba verlo.
-    """
-    started = time.perf_counter()
-    resuelto = _resolver_artista(raw, artista)
-    if resuelto is None:
-        print(f"     {etiqueta:16} Spotify no reconoce a {artista!r}")
-        return
-    artist_id, nombre_real = resuelto
-
-    # ¿Es el mismo nombre que se le pidio, o Spotify se ha ido a otro artista?
-    parecido = similitud(normalize(artista), normalize(nombre_real))
-    sello = "=" if parecido >= 72 else "!"
-    print(f"     {etiqueta:16} pidio {artista!r} {sello}> Spotify da {nombre_real!r}"
-          f"  (parecido {parecido:.0f})")
-    if sello == "!":
-        print("                      ^^ OJO: no es el mismo artista. Lo de abajo sobra.")
-
-    pistas, avisos, peticiones = _canciones_del_artista(raw, artist_id, nombre_real)
-    # +1 por resolver el artista: el coste que cuenta es el del comando entero,
-    # no el de una de sus mitades.
-    peticiones += 1
-    dt = time.perf_counter() - started
+    dt = time.perf_counter() - inicio
     for aviso in avisos:
         print(f"                      ({aviso})")
-
-    if not pistas:
+    if not encontradas:
         print(f"                      sin canciones ({peticiones} peticiones, {dt:.2f} s)")
         return
-
-    ranking = _emparejar(titulo_oido, pistas)
-    mejor, segunda = ranking[0], (ranking[1] if len(ranking) > 1 else None)
-
-    print(f"                      {len(pistas)} canciones en "
+    print(f"                      {len(encontradas)} canciones en "
           f"{peticiones} peticiones, {dt:.2f} s")
-    print(f"                      -> {_pista(mejor[1])}   ({mejor[0]:.1f})")
-    if segunda:
-        print(f"                      2a: {_pista(segunda[1])}   ({segunda[0]:.1f})"
-              f"   margen {mejor[0] - segunda[0]:+.1f}")
+    _ranking(titulo, list(encontradas.values()))
+
+
+def _via_una_busqueda(raw: Any, titulo: str, artista: str, cap: dict[str, Any]) -> None:
+    """D) El artista como filtro y el titulo destrozado como texto libre.
+
+    LA CANDIDATA BARATA. El filtro `artist:"..."` reduce el espacio a las
+    canciones de ese artista, y la busqueda difusa de Spotify solo tiene que
+    acertar dentro de ahi. Una peticion, sin traerse nada a memoria.
+    """
+    print("     D) UNA SOLA BUSQUEDA")
+    inicio = time.perf_counter()
+    consulta = f'artist:"{artista}" {titulo}'
+    try:
+        lote = _items(raw.search(q=consulta, type="track", limit=_maximo(cap)))
+    except Exception as exc:
+        print(f"                      {MAL} {_http(exc)}")
+        return
+    dt = time.perf_counter() - inicio
+    print(f"                      q={consulta!r}  ({dt:.2f} s, 1 peticion)")
+    if not lote:
+        print("                      (nada)")
+        return
+    _ranking(titulo, lote)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="¿Sirve el catalogo del artista?")
+    parser = argparse.ArgumentParser(description="¿Como se resuelve mejor un titulo mal oido?")
     parser.add_argument("frases", nargs="*", help="transcripciones tal como las oye Whisper")
     parser.add_argument("--config", type=Path, default=ROOT / "config.yaml")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.ERROR)
-    # spotipy registra cada 4xx con la URL entera y ocupa media pantalla. Los
-    # fallos que importan aqui ya se imprimen resumidos con `_http`.
+    # spotipy registra cada 4xx con la URL entera y ocupa media pantalla.
     logging.getLogger("spotipy.client").setLevel(logging.CRITICAL)
 
     config = Config.load(args.config)
     frases = list(args.frases) or list(EJEMPLOS)
 
     print("=" * 78)
-    print("¿SIRVE BUSCAR EN EL CATALOGO DEL ARTISTA?")
+    print("¿COMO SE RESUELVE MEJOR UN TITULO MAL OIDO?")
     print("=" * 78)
 
     spotify = SpotifyClient(config, Secrets())
@@ -275,88 +326,91 @@ def main() -> int:
 
     resolver = build_resolver(config.llm)
     if resolver is None:
-        print(f"\n{MAL} sin Ollama. Las vias A y B necesitan el modelo.")
+        print(f"\n{MAL} sin Ollama. Las vias A, B y D necesitan el modelo.")
         return 1
 
     print(f"\nmodelo: {config.llm.model}    frases: {len(frases)}\n")
 
+    cap = _sondear_api(raw)
+    if not cap["search_limit"]:
+        print(f"{MAL} la busqueda no funciona con ningun limite. Nada que medir.")
+        return 1
+
     for frase in frases:
-        titulo_oido, artista_oido = _partir(frase)
+        titulo, artista_oido = _partir(frase)
         print("-" * 78)
         print(f"OIDO:  {frase!r}")
 
         if artista_oido is None:
-            print("       (no se dijo artista: este enfoque no aplica aqui)\n")
+            print("       (no se dijo artista: estas vias no aplican)\n")
             continue
 
         # --- A) lo que hace el asistente hoy
-        started = time.perf_counter()
-        corregido = resolver.resolve(titulo_oido, artista_oido)
-        dt = time.perf_counter() - started
+        inicio = time.perf_counter()
+        corregido = resolver.resolve(titulo, artista_oido)
+        dt = time.perf_counter() - inicio
+        print("     A) HOY")
         if corregido is None:
-            print(f"     A) HOY           descartada por el guardia ({dt:.2f} s) -> no suena nada")
+            print(f"                      descartada por el guardia ({dt:.2f} s) -> no suena nada")
         else:
             consulta = (
                 f'track:"{corregido.titulo}" artist:"{corregido.artista}"'
                 if corregido.artista else corregido.titulo
             )
             try:
-                res = raw.search(q=consulta, type="track", limit=1)
-                items = (res or {}).get("tracks", {}).get("items") or []
+                lote = _items(raw.search(q=consulta, type="track", limit=1))
             except Exception as exc:
-                items = []
-                print(f"       (error: {exc})")
-            hallado = _pista(items[0]) if items else "(nada)"
-            print(f"     A) HOY           el LLM dice {corregido.titulo!r} de "
+                lote = []
+                print(f"                      ({_http(exc)})")
+            print(f"                      el LLM dice {corregido.titulo!r} de "
                   f"{corregido.artista!r} ({dt:.2f} s)")
-            print(f"                      -> {hallado}")
+            print(f"                      -> {_pista(lote[0]) if lote else '(nada)'}")
 
-        # --- B) el LLM solo para el artista, el titulo del catalogo real
+        # El artista segun el LLM, que es la parte que acierta. Si el guardia
+        # tiro la correccion entera, se le vuelve a preguntar sin filtrar.
         artista_llm = corregido.artista if corregido else ""
         if not artista_llm:
-            # El guardia tiro la correccion entera, pero el artista puede seguir
-            # siendo bueno: se vuelve a pedir sin filtrar nada.
-            crudo = resolver._ask(f"{titulo_oido} de {artista_oido}")  # sonda
+            crudo = resolver._ask(f"{titulo} de {artista_oido}")  # sonda
             try:
                 artista_llm = MusicQuery.model_validate(crudo or {}).artista
             except Exception:
                 artista_llm = ""
-        if artista_llm:
-            _via_catalogo(raw, titulo_oido, artista_llm, "B) LLM+CATALOGO")
-        else:
-            print("     B) LLM+CATALOGO  el LLM no dio artista")
 
-        # --- C) sin LLM: que Spotify resuelva el artista tal como se oyo
-        _via_catalogo(raw, titulo_oido, artista_oido, "C) SIN LLM")
+        if artista_llm:
+            _via_catalogo(raw, titulo, artista_llm, cap)
+            _via_una_busqueda(raw, titulo, artista_llm, cap)
+        else:
+            print("     B) CATALOGO          el LLM no dio artista")
+            print("     D) UNA SOLA BUSQUEDA el LLM no dio artista")
+
+        # --- C) sin LLM, con el artista tal como se oyo
+        print("     C) SIN LLM")
+        resuelto = _resolver_artista(raw, artista_oido)
+        if resuelto is None:
+            print(f"                      Spotify no reconoce a {artista_oido!r}")
+        else:
+            _cabecera_artista(artista_oido, resuelto[1])
         print()
 
     print("=" * 78)
-    print("QUE MIRAR — y hay que mirar los TITULOS, no las notas:")
+    print("QUE MIRAR — los TITULOS, no las notas:")
     print()
-    print("  1. EMPIEZA POR EL ARTISTA. Si la linea dice '!>', Spotify se fue a")
-    print("     otro artista y la cancion de debajo no significa nada. Es donde")
-    print("     se cayo la via C en la primera tanda: 'tibi guerl' -> TINI y")
-    print("     'uiquen' -> ChocQuibTown.")
+    print("  1. EL ARTISTA PRIMERO. Si sale '!>', Spotify se fue a otro y lo de")
+    print("     debajo no significa nada. Ahi se cae C, ya medido.")
     print()
-    print("  2. ¿B acierta donde A falla? Entonces vale la pena sacar el titulo")
-    print("     del catalogo del artista en vez de fiarse del que da el LLM.")
+    print("  2. ¿B o D aciertan donde A falla? Entonces acotar por artista es")
+    print("     mejor que fiarse del titulo que da el LLM.")
     print()
-    print("  3. ¿C acierta tanto como B? Seria la mejor noticia posible —el LLM")
-    print("     sobraria en esta capa y se podria volver al 3B—, pero la primera")
-    print("     tanda dice que no: la busqueda de Spotify no aguanta la fonetica")
-    print("     espanola y solo acierta cuando Whisper ya habia escrito bien el")
-    print("     nombre. Confirmalo con TUS artistas antes de darlo por cerrado.")
+    print("  3. ¿D acierta tanto como B? GANA D: una peticion en vez de varias")
+    print("     paginas, y nada que traerse a memoria. Mira las dos cifras de")
+    print("     peticiones antes de decidir.")
     print()
     print("  4. Mira el MARGEN con la segunda. Si la buena gana por poco, un")
-    print("     umbral no va a separarlas de forma fiable y estariamos repitiendo")
+    print("     umbral no las separara de forma fiable y estariamos repitiendo")
     print("     el error del guardia de verosimilitud.")
     print()
-    print("  5. ¿Sale el titulo bueno en la lista del artista? Si no aparece, no")
-    print("     hay emparejamiento que valga: habria que traer mas canciones.")
-    print()
-    print("  6. Ojo a las PETICIONES y a los segundos: se suman al comando. Si")
-    print("     hacen falta tres paginas para encontrar el titulo, eso pesa tanto")
-    print("     como el LLM en la decision.")
+    print("  5. ¿Aparece el titulo bueno? Si no esta en la lista, no hay")
+    print("     emparejamiento que valga.")
     return 0
 
 
