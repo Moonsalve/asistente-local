@@ -38,7 +38,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rapidfuzz import fuzz
@@ -46,6 +46,12 @@ from rapidfuzz import fuzz
 from asistente.config import Config, Secrets
 from asistente.router.text import normalize
 from asistente.skills.base import Skill, SkillResult
+
+if TYPE_CHECKING:
+    # Solo para el tipo. `music_ai` importa de aqui (`similitud`), asi que
+    # importarlo de verdad crearia un ciclo; con `from __future__ import
+    # annotations` la anotacion nunca se evalua en tiempo de ejecucion.
+    from asistente.skills.music_ai import MusicQuery, MusicResolver
 
 log = logging.getLogger(__name__)
 
@@ -505,7 +511,7 @@ class SpotifyClient:
         todo esto (hasta 20 peticiones), por eso `warmup()` la paga al arrancar
         y no en mitad de un comando.
         """
-        if self._client is None:
+        if self._client is None or not self._config.index_library:
             return ()
         fresco = time.monotonic() - self._liked_at < _PLAYLISTS_TTL_S
         if not force and self._liked and fresco:
@@ -824,14 +830,22 @@ class SpotifyPlaySkill(Skill):
         "de quien es la cancion, va en 'artist'."
     )
 
-    def __init__(self, client: SpotifyClient) -> None:
+    def __init__(self, client: SpotifyClient, resolver: MusicResolver | None = None) -> None:
         self._client = client
+        #: Corrector de nombres con LLM. None = el asistente busca solo con lo
+        #: que Whisper oyo, que es como funcionaba antes de que existiera.
+        self._resolver = resolver
 
     def execute(self, args: BaseModel) -> SkillResult:
         assert isinstance(args, PlayArgs)
         kind: Kind | None = args.kind  # type: ignore[assignment]  # el validador ya lo acoto
         outcome = self._client.play_query(args.query, artist=args.artist, kind=kind)
+        if outcome.reason == "no_encontrado":
+            outcome = self._retry_corregido(args, kind) or outcome
         if not outcome.ok:
+            # Se nombra lo que PIDIO el usuario, no lo que el LLM propuso: si la
+            # correccion tampoco sono, repetirsela solo confundiria sobre que
+            # fue lo que no se encontro.
             que = f"{args.query} de {args.artist}" if args.artist else args.query
             return _no_sono(outcome, que)
         # Silencio. La cancion empezando a sonar ya dice que se acerto, y decirlo
@@ -839,6 +853,44 @@ class SpotifyPlaySkill(Skill):
         # se habla cuando algo NO sale: `outcome.label` sigue existiendo porque
         # es lo que se registra en el log.
         return SkillResult.silent()
+
+    def _retry_corregido(self, args: PlayArgs, kind: Kind | None) -> PlayOutcome | None:
+        """Segundo intento con el nombre corregido por el LLM, o None si no hay.
+
+        SOLO SE LLEGA AQUI CON `no_encontrado`, y esa condicion es el diseno
+        entero. Los otros motivos —sin Spotify, sin dispositivo, error— no los
+        arregla escribir mejor el titulo, asi que gastar 600-900 ms de LLM para
+        volver a chocar con la misma pared seria peor que el fallo. Y las
+        peticiones que la via barata YA resuelve no pagan nada: es la misma
+        cascada por coste del router.
+
+        `MusicResolver.resolve` ya descarta lo que no se parece a lo que se oyo,
+        asi que lo que llega aqui es una correccion creible; lo unico que queda
+        por decidir es si aporta algo que buscar.
+        """
+        if self._resolver is None:
+            return None
+        if (corregido := self._resolver.resolve(args.query, args.artist)) is None:
+            return None
+
+        artista = corregido.artista or None
+        if not self._aporta_algo(args, corregido):
+            # Pasa cuando el modelo devuelve lo mismo que se le dio, que es lo
+            # correcto por su parte —no habia nada que corregir— pero repetir
+            # la busqueda daria exactamente el mismo `no_encontrado`.
+            log.debug("la correccion del LLM no cambia la busqueda; no se reintenta")
+            return None
+
+        log.info("segundo intento con el nombre corregido: %r", corregido.pedido)
+        return self._client.play_query(corregido.titulo, artist=artista, kind=kind)
+
+    @staticmethod
+    def _aporta_algo(args: PlayArgs, corregido: MusicQuery) -> bool:
+        """¿La correccion propone una busqueda distinta de la que ya fallo?"""
+        return (
+            normalize(corregido.titulo) != normalize(args.query)
+            or normalize(corregido.artista) != normalize(args.artist or "")
+        )
 
 
 class LikedSkill(Skill):

@@ -15,13 +15,14 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 4 etapas + skills | **Hecha y verificada** (307 tests) |
+| 2 | Router de 4 etapas + skills | **Hecha y verificada** (337 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
+| 4.5 | El LLM corrige el nombre de la canción | Escrito y con tests; **sin verificar en el PC** |
 | 5 | Benchmark y tuning | Pendiente |
 
 Sin verificar todavía en Windows: el autodescubrimiento de aplicaciones, los
-juegos de Steam y Brave como navegador.
+juegos de Steam, Brave como navegador y la corrección de títulos con LLM.
 
 El router y las skills se prueban en macOS; todo lo que toca micrófono, CUDA,
 `pycaw` o `SendInput` requiere el PC Windows.
@@ -42,8 +43,8 @@ py -3.11 -m venv .venv
 pip install -e ".[dev]"
 pip install -e ".[gpu]"            # CUDA: onnxruntime-gpu + cuBLAS + cuDNN
 
-# 2. Modelo del LLM
-ollama pull qwen2.5:3b-instruct-q4_K_M
+# 2. Modelo del LLM (uno solo: router y corrección de títulos)
+ollama pull qwen2.5:7b-instruct-q4_K_M
 
 # 3. Voz de Piper (descarga el .onnx y su .json, que van siempre juntos)
 python scripts/download_voice.py
@@ -100,12 +101,13 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 307 tests, ~4 s
+PYTHONPATH=src pytest -q                           # 337 tests, ~3 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
 PYTHONPATH=src python scripts/diagnose_apps.py     # qué apps se abren y cuáles se cierran
 PYTHONPATH=src python scripts/diagnose_spotify.py  # dispositivos, tus playlists, me gusta
 PYTHONPATH=src python scripts/diagnose_volume.py   # qué mecanismo de volumen falla
 PYTHONPATH=src python scripts/diagnose_noise.py    # ruido de la sala y umbrales
+PYTHONPATH=src python scripts/diagnose_music_ai.py # qué corrige el LLM y qué descarta
 ```
 
 `tests/test_router.py` mide el router contra frases que **no** están en
@@ -270,6 +272,30 @@ emparejamiento difuso acierta donde la Web API no encontraría nada.
 **Los títulos en inglés** dichos en español se transcriben como suenan
 (*"TV Gery"* por *"TV Girl"*), y ahí es donde entra la búsqueda en tu
 biblioteca: ese par puntúa 90.9 sobre un umbral de 72.
+
+**Y si la canción no está en tu biblioteca, la corrige el LLM.** Buscar en tus
+Me Gusta solo encuentra lo que ya tienes; pedir algo nuevo con el título
+destrozado no daba nada. Cuando Spotify no encuentra nada, el modelo local
+reescribe el par {título, artista} —*"lovin machin de tibi guerl"* →
+*"Loving Machine de TV Girl"*— y se busca otra vez.
+
+Tres cosas que conviene saber de cómo se comporta:
+
+- **Solo se paga cuando hace falta.** Lo que ya funcionaba sigue costando lo
+  mismo; los 600–900 ms del modelo los paga únicamente la petición que iba a
+  fallar de todos modos. Tampoco entra si el problema era otro: sin Spotify
+  abierto, escribir mejor el título no arregla nada.
+- **Antes de sonar, se comprueba que corrigió y no inventó.** Si el modelo no
+  conoce la canción se saca un título plausible de la manga, y eso es peor que
+  no encontrarla. Una corrección que se aleja demasiado de lo que oíste se tira
+  y el asistente dice que no la encontró.
+- **Se puede apagar** con `spotify.resolve_with_llm: false` en
+  `config.local.yaml`. Vuelve a funcionar como antes, sin ningún otro efecto.
+
+En el log, con `-v`, verás `el LLM corrige ...` cuando entra, y
+`correccion descartada por inverosimil: ...` cuando el modelo se estaba
+inventando el título. Si esa segunda línea sale a menudo, no conoce la música
+que escuchas.
 
 Se probó además sesgar a Whisper con los nombres de tu biblioteca
 (`stt.hotwords_from_spotify`) y **viene desactivado porque con `large-v3-turbo`

@@ -20,7 +20,7 @@ flowchart TD
     RP -->|"pon X de Y"| SLOT
     RP -->|miss| R1{2· Match semántico<br/>e5-small centrado · 2 ms}
     R1 -->|intent| SLOT[Extracción de slots<br/>regex por intent]
-    R1 -->|gana _fallback| LLM[3· Qwen 2.5 3B Q4<br/>Ollama · format=json]
+    R1 -->|gana _fallback| LLM[3· Qwen 2.5 7B Q4<br/>Ollama · salida con esquema]
 
     SLOT -->|ok| VAL[Registro de skills<br/>allowlist + Pydantic]
     SLOT -->|slot ausente| LLM
@@ -237,6 +237,87 @@ Medido sobre transcripciones reales: el peor acierto puntúa 91.9 y el mejor
 fallo 65.0, con el umbral en 72. `token_set_ratio` **no** vale aquí aunque sí
 valga para las playlists: premia las subcadenas, y con una biblioteca entera
 delante *"rock"* casaría al 100 con "Lovers Rock".
+
+### Y la tercera red: el LLM sabe cómo se escribe "TV Girl"
+
+La biblioteca tiene un techo que no se puede subir afinando umbrales: **solo
+encuentra lo que ya tienes**. Pedir algo que no está en tus Me Gusta caía a una
+búsqueda con el texto destrozado, y ahí la Web API no tiene nada que hacer
+porque busca letras, no fonética.
+
+Lo que falta ahí no es una medida mejor, es **conocimiento del mundo**.
+*"Tibi guerl"* solo se convierte en *"TV Girl"* si sabes que TV Girl existe, y
+eso ninguna distancia de edición lo puede saber. Por eso `skills/music_ai.py`
+pone al LLM local a corregir el par {título, artista} antes de volver a buscar.
+
+**La cascada por coste es el diseño entero.** El LLM no se llama en cada
+petición de música, solo cuando la vía barata ya falló:
+
+| | Paso | Coste |
+|---|---|---|
+| 1 | Búsqueda directa en Spotify + verificación de cobertura | 0 ms extra |
+| 2 | Emparejamiento contra tus Me Gusta (local) | 0 ms |
+| 3 | El LLM corrige el nombre y se vuelve a buscar | 600–900 ms |
+
+Es el mismo reparto que el router (literal → patrones → semántico → LLM) y que
+las defensas contra el ruido: lo caro solo lo paga quien no tenía otra salida.
+Sin esa condición, cada *"pon música"* que hoy ya funciona costaría casi un
+segundo de más para nada. Y el reintento se limita a `no_encontrado`: sin
+Spotify abierto, escribir mejor el título no arregla nada.
+
+Esto obliga a **un solo modelo para el router y para la música**, porque en
+8 GB de VRAM no caben dos: Whisper turbo 1.6 GB + qwen2.5 7B q4 4.7 GB + KV
+cache 0.5 GB ≈ 6.8 GB. Se sube de 3B a 7B por una sola capa, la única que
+aprovecha el tamaño; para el router daba igual, porque ahí el catálogo resuelve
+la gran mayoría de los turnos en 0–2 ms.
+
+**El catálogo de comandos no pasa por aquí, y esa mitad importa tanto como la
+otra.** Para *"sube el volumen"* o *"pausa"*, el catálogo cuesta 0–2 ms, es
+determinista, no puede alucinar una acción y está medido 45/45. Pasarlo por un
+LLM son 250–900 ms por comando y la posibilidad de inventarse una herramienta:
+peor en las tres dimensiones que importan. El LLM entra solo donde aporta algo
+que el catálogo no tiene, que son los nombres propios.
+
+#### Corregir no es inventar
+
+La trampa de todo esto. Si el modelo no conoce la canción, no dice que no la
+conoce: **produce un título plausible y distinto**, con la misma confianza. Eso
+es peor que no encontrar nada, porque suena algo y parece que funcionó — el
+mismo argumento por el que el volumen de Spotify no degrada al mezclador.
+
+El prompt se lo pide (*"si no reconoces la canción, reconstruye literalmente"*),
+y eso ayuda pero no basta. La defensa que sí mide algo aprovecha que **Whisper
+destroza la ortografía pero conserva el sonido**: una corrección de verdad se
+queda cerca del texto que se oyó, y una invención se va lejos. Es literalmente
+la misma comparación que la búsqueda en la biblioteca —transcripción destrozada
+contra título bien escrito— así que se usa la misma `similitud` y el mismo
+umbral de 72.
+
+Comprobado también para este uso:
+
+| | Rango | El caso límite |
+|---|---|---|
+| Correcciones reales | 73.9 – 92.0 | *"blain ding lights de uiquen"* → Blinding Lights de The Weeknd (73.9) |
+| Invenciones | 35.9 – 63.4 | *"loving machine de tv gery"* → Love Machine de The Miracles (63.4) |
+
+El hueco es de 10.5 puntos y el umbral cae dentro. La asimetría es deliberada:
+rechazar una corrección buena cuesta un *"no lo encontré"*, que es lo que habría
+pasado sin el LLM; aceptar una mala pone a sonar una canción que nadie pidió.
+
+Un detalle que parece un matiz y no lo es: **cuando la frase no dijo el artista,
+solo se comparan los títulos**. El grupo que añade el modelo es información
+nueva y no hay nada oído contra lo que contrastarla; metiéndolo en la
+comparación, *"pon creep"* → *"Creep de Radiohead"* puntuaría 52.6 y se
+rechazaría una corrección perfecta, solo porque el nombre del grupo es más largo
+que el título.
+
+Queda una cuarta red gratis: el nombre corregido vuelve a pasar por la
+**verificación de cobertura**, así que un título inventado que además Spotify no
+encuentre nunca llega a sonar.
+
+Y el log deja la sonda funcionando sola: cada corrección descartada por
+inverosímil se registra a nivel INFO. Si esa línea aparece a menudo, el modelo
+no conoce lo que escuchas y está rellenando huecos.
 
 ### Hay frases sin significado que juzgar
 

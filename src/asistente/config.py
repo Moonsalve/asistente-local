@@ -237,7 +237,25 @@ class RouterConfig(BaseModel):
 class LlmConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    model: str = "qwen2.5:3b-instruct-q4_K_M"
+    #: UN SOLO MODELO PARA EL ROUTER Y PARA LA MUSICA, porque dos no caben.
+    #:
+    #: La cuenta, en una RTX de 8 GB:
+    #:     Whisper large-v3-turbo   1.6 GB
+    #:     qwen2.5 7B q4_K_M        4.7 GB
+    #:     KV cache                 0.5 GB
+    #:                              ------
+    #:                              6.8 GB de 8
+    #:
+    #: Se sube de 3B a 7B por una sola razon: corregir "tibi guerl" -> "TV Girl"
+    #: es conocimiento del mundo, y ahi el tamano del modelo SI se nota. Para el
+    #: router daba igual —el catalogo resuelve el 85% de los turnos en 0-2 ms y
+    #: el LLM es solo la red de seguridad—, asi que el 7B se paga en la unica
+    #: capa que lo aprovecha.
+    #:
+    #: COMO REVERTIR: `llm.model: qwen2.5:3b-instruct-q4_K_M` en
+    #: `config.local.yaml`. Hazlo si el log de Ollama menciona capas en CPU o si
+    #: la latencia del turno se dispara: es que no cupo y esta descargando a RAM.
+    model: str = "qwen2.5:7b-instruct-q4_K_M"
     host: str = "http://127.0.0.1:11434"
     #: -1 mantiene el modelo en VRAM indefinidamente. Sin esto, el primer
     #: comando tras un rato de inactividad tarda 5-10 s en volver a cargar.
@@ -342,6 +360,20 @@ class SpotifyConfig(BaseModel):
     #: Si la API falla o no hay dispositivo activo, se recurre a las teclas
     #: multimedia de Windows. Menos capaz pero nunca deja el comando sin efecto.
     fallback_to_media_keys: bool = True
+    #: Deja que el LLM local corrija el titulo cuando Spotify no encuentra nada.
+    #: Ver `skills/music_ai.py`. Solo se paga en las peticiones que YA habian
+    #: fallado, asi que apagarlo no acelera nada de lo que hoy funciona: lo
+    #: unico que hace es devolver el asistente a "solo encuentra lo que escribes
+    #: como Spotify lo tiene escrito".
+    resolve_with_llm: bool = True
+    #: Indexar tus Me Gusta al arrancar (hasta 20 peticiones) para poder
+    #: emparejar contra ellos antes de tocar el catalogo publico.
+    #:
+    #: Sigue mereciendo la pena con el LLM detras, porque es el paso 2 de la
+    #: cascada: local, gratis e instantaneo para lo que ya tienes, y evita los
+    #: 600-900 ms del modelo justo en las canciones que mas escuchas. Con esto
+    #: en `false` esas peticiones siguen funcionando, pero pagando el LLM.
+    index_library: bool = True
     #: Procesos de Spotify. Solo lo usa `scripts/diagnose_volume.py`, para
     #: senalar a Spotify en la lista del mezclador de Windows y poder confirmar
     #: que esta sonando. El volumen NO se controla por ahi: ver skills/volume.py.
