@@ -81,6 +81,24 @@ def _puntuacion(query: str, artist: str | None, corregido: MusicQuery) -> float:
     return similitud(normalize(oido), normalize(propuesto))
 
 
+def _es_eco(query: str, artist: str | None, corregido: MusicQuery) -> bool:
+    """¿Devolvio lo mismo que se le dio, sin corregir nada?
+
+    HAY QUE SEPARARLO, y la primera version de este script no lo hacia: un eco
+    puntua 100 —no puede puntuar otra cosa, se esta comparando el texto consigo
+    mismo— y salia listado como la mejor correccion de todas. Es exactamente al
+    reves: significa que el modelo NO reconocio la cancion.
+
+    En el asistente de verdad un eco no hace nada, porque `_aporta_algo` ve que
+    la busqueda no cambia y no la repite. Aqui hay que decirlo igual, o el
+    diagnostico enseña un exito donde no hubo ni intento.
+    """
+    return (
+        normalize(corregido.titulo) == normalize(query)
+        and normalize(corregido.artista) == normalize(artist or "")
+    )
+
+
 def _suena(client: SpotifyClient, corregido: MusicQuery) -> str:
     """Que reproduciria `play_query` con el nombre corregido, sin reproducirlo."""
     raw = client._client  # diagnostico: se mira por dentro a proposito
@@ -137,7 +155,7 @@ def main() -> int:
         print(f"\n{MAL} sin conexion con Spotify. Ejecuta antes diagnose_spotify.py")
         return 1
 
-    aceptadas = descartadas = fallos = 0
+    aceptadas = descartadas = fallos = ecos = 0
     peor_aceptada, mejor_descartada = 100.0, 0.0
     total_s = 0.0
 
@@ -167,23 +185,30 @@ def main() -> int:
             continue
 
         score = _puntuacion(query, artist, corregido)
-        vale = score >= PLAUSIBLE_THRESHOLD
-        marca = OK if vale else MAL
-        veredicto = "ACEPTA" if vale else "DESCARTA"
+        eco = _es_eco(query, artist, corregido)
+        vale = score >= PLAUSIBLE_THRESHOLD and not eco
 
         print(f"       el LLM dice   titulo={corregido.titulo!r} "
               f"artista={corregido.artista!r}  ({dt:.2f} s)")
-        print(f"{marca} {veredicto:9} puntuacion {score:.1f} "
-              f"contra un umbral de {PLAUSIBLE_THRESHOLD:.0f}")
-        if artist is None:
-            print("       (sin artista dicho: se comparan solo los titulos)")
 
-        if vale:
-            aceptadas += 1
-            peor_aceptada = min(peor_aceptada, score)
+        if eco:
+            # Un eco puntua 100 por construccion: se compara el texto consigo
+            # mismo. Contarlo como la mejor correccion seria justo al reves.
+            print(f"{MAL} ECO       no corrigio nada; el asistente NO repite la busqueda")
+            ecos += 1
         else:
-            descartadas += 1
-            mejor_descartada = max(mejor_descartada, score)
+            marca = OK if vale else MAL
+            veredicto = "ACEPTA" if vale else "DESCARTA"
+            print(f"{marca} {veredicto:9} puntuacion {score:.1f} "
+                  f"contra un umbral de {PLAUSIBLE_THRESHOLD:.0f}")
+            if artist is None:
+                print("       (sin artista dicho: se comparan solo los titulos)")
+            if vale:
+                aceptadas += 1
+                peor_aceptada = min(peor_aceptada, score)
+            else:
+                descartadas += 1
+                mejor_descartada = max(mejor_descartada, score)
 
         if args.spotify:
             print(f"       sonaria       {_suena(spotify, corregido)}")
@@ -191,7 +216,10 @@ def main() -> int:
 
     print("=" * 78)
     n = len(peticiones)
-    print(f"aceptadas {aceptadas}/{n}   descartadas {descartadas}/{n}   sin respuesta {fallos}/{n}")
+    print(
+        f"aceptadas {aceptadas}/{n}   descartadas {descartadas}/{n}   "
+        f"ecos {ecos}/{n}   sin respuesta {fallos}/{n}"
+    )
     if aceptadas:
         print(f"peor aceptada:    {peor_aceptada:.1f}")
     if descartadas:
@@ -204,15 +232,19 @@ def main() -> int:
         print(f"coste medio del modelo: {total_s / n:.2f} s por peticion")
 
     print()
-    print("QUE MIRAR:")
-    print("  - Las que DESCARTA, ¿eran invenciones? Entonces el umbral hace su trabajo.")
-    print("  - ¿Descarta correcciones BUENAS? Baja PLAUSIBLE_THRESHOLD en music_ai.py,")
-    print("    sin pasar de la mejor descartada de arriba.")
-    print("  - ¿ACEPTA canciones que no son? El modelo se las inventa y se parecen")
-    print("    demasiado a lo que oiste: subir el umbral no basta, hace falta otro modelo.")
-    print("  - Con 'musica tranquila' o 'una cancion bonita' el modelo NO deberia sacarse")
-    print("    un titulo concreto: no son canciones, son generos. Si lo hace, se descartan")
-    print("    por puntuacion, que es exactamente para lo que esta el umbral.")
+    print("QUE MIRAR — Y LEELO CON LOS TITULOS DELANTE, NO SOLO CON LOS NUMEROS:")
+    print("  El numero mide si la propuesta SUENA como lo que oiste, no si es LA")
+    print("  cancion. Son cosas distintas y hay que comprobarlas con los ojos.")
+    print()
+    print("  - ¿Alguna ACEPTA con un titulo que no es el que pediste? Entonces el")
+    print("    umbral no te esta protegiendo: una invencion que suena parecida")
+    print("    puntua alto, y subirlo solo tirara tambien las correcciones buenas.")
+    print("  - ¿Hay muchos ECO? El modelo no conoce tu musica. No es un fallo del")
+    print("    umbral: es que no hay nada que corregir con lo que sabe.")
+    print("  - ¿DESCARTA correcciones buenas? Baja PLAUSIBLE_THRESHOLD en")
+    print("    music_ai.py, sin pasar de la mejor descartada de arriba.")
+    print("  - El hueco solo significa algo si arriba hay de los dos tipos y los")
+    print("    has mirado uno a uno. Con una sola descartada, no mide nada.")
     return 0
 
 
