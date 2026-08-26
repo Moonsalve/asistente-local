@@ -33,21 +33,32 @@ responden y cual es el `limit` mas alto que acepta la busqueda, y el resto de
 la sonda usa lo que haya salido. La tabla que imprime es en si misma un
 resultado, y vale para todo el proyecto.
 
-LAS VIAS QUE SE COMPARAN
-------------------------
+LAS VIAS QUE SE COMPARAN, Y LO QUE YA SE SABE DE CADA UNA
+----------------------------------------------------------
     A) HOY        el LLM corrige titulo+artista, guardia, y se busca
     B) CATALOGO   se traen las canciones del artista y se empareja en local
-    C) SIN LLM    Spotify resuelve el artista el solo (ya medido: se cae)
+    C) SIN LLM    Spotify resuelve el artista el solo
     D) UNA SOLA   artista del LLM + titulo TAL COMO SE OYO, en una peticion
 
-**D es la nueva candidata y la barata.** En vez de traerse el catalogo entero
-para emparejar en casa, se le pasa a Spotify el artista como filtro de campo y
-el titulo destrozado como texto libre: `artist:"TV Girl" ponlobes rock`. El
-filtro reduce el espacio a las canciones de ese artista y la busqueda difusa
-solo tiene que acertar dentro de ahi. Una peticion en vez de varias paginas.
+**C esta descartada** (medido): la busqueda de Spotify no aguanta la fonetica
+espanola y solo acierta cuando Whisper ya habia escrito bien el nombre.
 
-Si D acierta tanto como B, gana D: menos peticiones, menos codigo y ninguna
-lista que mantener en memoria.
+**D esta descartada** (medido, 0 de 5): `artist:"Nirvana" esmels laik tin
+espirit` no devuelve NADA. El filtro de campo no hace busqueda difusa sobre el
+texto libre que lo acompaña — los terminos se exigen, no se aproximan. La idea
+de dejar que Spotify empareje dentro del artista no funciona: hay que traerse
+las canciones y emparejar en local.
+
+**A funciona 3 de 5** y sus dos fallos son el eco del modelo y una correccion
+que el guardia tiro. Sorprendentemente robusta: cuando el LLM dijo "Nothing
+Matters" de Metallica, los filtros de campo mas la verificacion de cobertura
+devolvieron "Nothing Else Matters" igualmente.
+
+**B es la que puede ganar**, y depende de una sola cosa: que el titulo bueno
+este entre las canciones que se traen. La busqueda `artist:"X"` NO vale como
+fuente —devuelve cinco canciones y sin los exitos: "Blinding Lights" no salia
+entre las de The Weeknd—, asi que el catalogo se reconstruye desde los DISCOS,
+que con `albums(ids)` en lote son tres peticiones para una discografia entera.
 
 Uso (en el PC, con Ollama y Spotify en marcha):
 
@@ -160,18 +171,38 @@ def _sondear_api(raw: Any) -> dict[str, Any]:
         return capacidades
     artist_id = str(artistas[0]["id"])
 
+    album_id = ""
     for nombre, llamada in (
         ("artist_top_tracks", lambda: raw.artist_top_tracks(artist_id)),
         ("artist_albums", lambda: raw.artist_albums(artist_id, limit=_maximo(capacidades))),
     ):
         try:
-            llamada()
+            res = llamada()
         except Exception as exc:
             capacidades[nombre] = False
             print(f"  {nombre:<20} MAL   {_http(exc)}")
         else:
             capacidades[nombre] = True
             print(f"  {nombre:<20} OK")
+            if nombre == "artist_albums" and (items := (res or {}).get("items") or []):
+                album_id = str(items[0].get("id", ""))
+
+    # `albums(ids)` trae hasta 20 discos CON SUS CANCIONES en una sola peticion.
+    # Es la diferencia entre reconstruir una discografia en tres peticiones o en
+    # veinte, y con un techo de search de 10 eso decide si la via B sirve o no.
+    if album_id:
+        for nombre, llamada in (
+            ("albums (lote)", lambda: raw.albums([album_id])),
+            ("album_tracks", lambda: raw.album_tracks(album_id, limit=_maximo(capacidades))),
+        ):
+            try:
+                llamada()
+            except Exception as exc:
+                capacidades[nombre] = False
+                print(f"  {nombre:<20} MAL   {_http(exc)}")
+            else:
+                capacidades[nombre] = True
+                print(f"  {nombre:<20} OK")
 
     print()
     return capacidades
@@ -184,16 +215,35 @@ def _maximo(capacidades: dict[str, Any]) -> int:
 # ------------------------------------------------------------ las cuatro vias
 
 
-def _resolver_artista(raw: Any, nombre: str) -> tuple[str, str] | None:
-    """`(id, nombre real)` del artista que Spotify cree que es ese, o None."""
+def _resolver_artista(raw: Any, nombre: str, cap: dict[str, Any]) -> tuple[str, str] | None:
+    """`(id, nombre real)` del artista que MEJOR case con ese nombre, o None.
+
+    SE PIDEN VARIOS Y SE ELIGE, no se coge el primero. Con `limit=1` esta sonda
+    llego a resolver "Metallica" como "Guns N' Roses": `search()` SIEMPRE
+    devuelve algo y su primer resultado no tiene por que ser el que mas se
+    parece a lo que pediste. Es exactamente la leccion que ya estaba escrita en
+    `_best_match` de `skills/spotify.py`, y aqui la habia ignorado.
+    """
+    cuantos = min(_maximo(cap), 10)
     try:
-        items = _items(raw.search(q=nombre, type="artist", limit=1), "artists")
+        items = _items(raw.search(q=nombre, type="artist", limit=cuantos), "artists")
     except Exception as exc:
         print(f"{MAL} error buscando el artista: {_http(exc)}")
         return None
     if not items:
         return None
-    return str(items[0]["id"]), str(items[0].get("name", "?"))
+
+    puntuados = sorted(
+        ((similitud(normalize(nombre), normalize(str(a.get("name", "")))), a) for a in items),
+        key=lambda par: par[0],
+        reverse=True,
+    )
+    mejor = puntuados[0]
+    if len(puntuados) > 1 and mejor[0] < 72:
+        # Ninguno se parece: interesa ver contra que se estaba eligiendo.
+        otros = ", ".join(f"{str(a.get('name', '?'))!r} ({s:.0f})" for s, a in puntuados[:3])
+        print(f"                      (ningun candidato claro: {otros})")
+    return str(mejor[1]["id"]), str(mejor[1].get("name", "?"))
 
 
 def _cabecera_artista(pedido: str, real: str) -> bool:
@@ -230,7 +280,7 @@ def _via_catalogo(raw: Any, titulo: str, artista: str, cap: dict[str, Any]) -> N
     """B) Traerse las canciones del artista y emparejar en local."""
     print("     B) CATALOGO")
     inicio = time.perf_counter()
-    resuelto = _resolver_artista(raw, artista)
+    resuelto = _resolver_artista(raw, artista, cap)
     if resuelto is None:
         print(f"                      Spotify no reconoce a {artista!r}")
         return
@@ -250,22 +300,41 @@ def _via_catalogo(raw: Any, titulo: str, artista: str, cap: dict[str, Any]) -> N
         except Exception as exc:
             avisos.append(f"sin exitos ({_http(exc)})")
 
-    for offset in range(0, _MAX_CANCIONES, limite):
-        if peticiones >= _MAX_PETICIONES:
-            avisos.append(f"cortado en {_MAX_PETICIONES} peticiones: ya es demasiado para voz")
-            break
+    # LA DISCOGRAFIA, que es la fuente de verdad. `artist:"X"` en la busqueda
+    # devolvia solo cinco canciones y sin los exitos —"Blinding Lights" no salia
+    # entre las de The Weeknd—, asi que no vale como catalogo. Los discos si.
+    if cap.get("artist_albums") and cap.get("albums (lote)"):
         try:
             peticiones += 1
-            lote = _items(
-                raw.search(q=f'artist:"{real}"', type="track", limit=limite, offset=offset)
-            )
+            discos = (raw.artist_albums(artist_id, limit=limite) or {}).get("items") or []
+            ids = list({str(d["id"]) for d in discos if d.get("id")})[:20]
+            if ids:
+                peticiones += 1
+                for disco in (raw.albums(ids) or {}).get("albums") or []:
+                    for t in _items(disco, "tracks"):
+                        t.setdefault("artists", [{"name": real}])
+                        encontradas.setdefault(normalize(str(t.get("name", ""))), t)
         except Exception as exc:
-            avisos.append(f"busqueda cortada en offset {offset} ({_http(exc)})")
-            break
-        for t in lote:
-            encontradas.setdefault(normalize(str(t.get("name", ""))), t)
-        if len(lote) < limite:
-            break
+            avisos.append(f"sin discografia ({_http(exc)})")
+
+    # Red de seguridad: la busqueda filtrada, por si la discografia no responde.
+    if not encontradas:
+        for offset in range(0, _MAX_CANCIONES, limite):
+            if peticiones >= _MAX_PETICIONES:
+                avisos.append(f"cortado en {_MAX_PETICIONES} peticiones: demasiado para voz")
+                break
+            try:
+                peticiones += 1
+                lote = _items(
+                    raw.search(q=f'artist:"{real}"', type="track", limit=limite, offset=offset)
+                )
+            except Exception as exc:
+                avisos.append(f"busqueda cortada en offset {offset} ({_http(exc)})")
+                break
+            for t in lote:
+                encontradas.setdefault(normalize(str(t.get("name", ""))), t)
+            if len(lote) < limite:
+                break
 
     dt = time.perf_counter() - inicio
     for aviso in avisos:
@@ -385,7 +454,7 @@ def main() -> int:
 
         # --- C) sin LLM, con el artista tal como se oyo
         print("     C) SIN LLM")
-        resuelto = _resolver_artista(raw, artista_oido)
+        resuelto = _resolver_artista(raw, artista_oido, cap)
         if resuelto is None:
             print(f"                      Spotify no reconoce a {artista_oido!r}")
         else:
