@@ -172,14 +172,34 @@ intents:
     # regex. Si la busqueda con filtros no encuentra nada, la skill reintenta
     # con la frase entera en texto libre.
     patterns:
+      # EL VERBO PUEDE VENIR PEGADO AL TITULO: `)(?:\s+|(?=\w{4,}))`
+      #
+      # Whisper turbo une el verbo a lo que sigue cuando el titulo va en ingles:
+      # "Ponlovers Rock de TV Girl" por "pon Lovers Rock de TV Girl". Con `\s+`
+      # obligatorio no casaba ningun patron y la frase caia a la semantica o al
+      # LLM. MEDIDO antes del arreglo: de diez transcripciones pegadas, CERO
+      # llegaban aqui; tres acababan en spotify.liked y siete en el LLM, que es
+      # de donde salia el "se salta la cancion".
+      #
+      # La alternativa es: espacio, O BIEN cuatro o mas caracteres de palabra
+      # pegados. El cuatro no es arbitrario y es lo que hace segura la regla:
+      # los pronombres encliticos —ponLA, ponLO, ponLE, ponLAS, ponLOS, ponLES,
+      # ponME, ponTE, ponSE— caben todos en tres, y esos SI son comandos de otra
+      # cosa ("ponla" es reanudar, no buscar una cancion llamada "la"). No hay
+      # lista de excepciones que mantener: la longitud los separa sola.
+      #
+      # Y el orden de la alternancia del verbo hace el resto: en "ponme algo",
+      # la rama "pon" prueba el pegado, ve solo "me " y falla, y el motor
+      # retrocede a "ponme" con espacio.
+      #
       # 1) Con "cancion/tema/rola" y artista. Sin guardia: la palabra "cancion"
       #    ya deja claro que no es un comando del asistente.
       #    `query` GREEDY y `artist` perezoso -> se parte por el ULTIMO "de". En
       #    espanol los titulos llevan "de" a menudo ("el dia que me quieras de
       #    gardel") y los nombres de grupo casi nunca.
-      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar|escuchar)\s+(?:me\s+)?(?:la|el|una|un|mi)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar|escuchar)(?:\s+|(?=\w{4,}))(?:me\s+)?(?:la|el|una|un|mi)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
       # 2) Con "cancion/tema/rola" y sin artista.
-      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar|escuchar)\s+(?:me\s+)?(?:la|el|una|un|mi)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+?)\s*$'
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar|escuchar)(?:\s+|(?=\w{4,}))(?:me\s+)?(?:la|el|una|un|mi)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+?)\s*$'
       # 3) Playlist, album o "musica de X" dichos por su nombre. Va antes que
       #    las genericas para que "pon MI playlist de gym" funcione pese a que
       #    el guardia de aquellas bloquea "mi" (ver abajo).
@@ -187,7 +207,7 @@ intents:
       #    El unico choque de su lista cerrada de sustantivos es "pon la MUSICA
       #    AL treinta por ciento", que es volume.set; se descarta con un guardia
       #    minimo en vez de con el guardia entero, que bloquearia "mi/mis".
-      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)\s+(?:me\s+)?(?!(?:la\s+)?musica\s+(?:al|en)\s)(?:la|el|las|los|un|una|mi|mis)?\s*(?P<kind>lista\s+de\s+reproduccion|playlist|album|disco|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)(?:\s+|(?=\w{4,}))(?:me\s+)?(?!(?:la\s+)?musica\s+(?:al|en)\s)(?:la|el|las|los|un|una|mi|mis)?\s*(?P<kind>lista\s+de\s+reproduccion|playlist|album|disco|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
       #
       # 4) y 5) GENERICAS: "pon <lo que sea>", con y sin artista. Son las que
       #    arreglan el caso reportado, y las unicas que necesitan guardia.
@@ -210,8 +230,8 @@ intents:
       #    coletillas de genero, no artistas. Sin eso, "pon algo de jazz" se
       #    partia en query="algo" / artist="jazz" y no sonaba nada. Bloqueadas
       #    aqui, caen a la 5), que si consume la coletilla y deja query="jazz".
-      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)\s+(?:me\s+)?(?!(?:mis?\b|lo\s+que\b|las?\s+canciones\s+(?:que|en)\b|la\s+(?:siguiente|anterior|que\s+sigue|pausa)\b|el\s+(?:volumen|sonido|audio|modo|aleatorio)\b|otra\s+(?:vez|cancion|rola|cosa)\b|en\s+(?:orden|desorden|aleatorio)\b|pausa\b|silencio\b|algo\s+de\b|musica\s+de\b|(?:la\s+)?musica\s+(?:al|en)\s|spotify\s+(?:al|en)\s))(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
-      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)\s+(?:me\s+)?(?!(?:mis?\b|lo\s+que\b|las?\s+canciones\s+(?:que|en)\b|la\s+(?:siguiente|anterior|que\s+sigue|pausa)\b|el\s+(?:volumen|sonido|audio|modo|aleatorio)\b|otra\s+(?:vez|cancion|rola|cosa)\b|en\s+(?:orden|desorden|aleatorio)\b|pausa\b|silencio\b|(?:la\s+)?musica\s+(?:al|en)\s|spotify\s+(?:al|en)\s))(?:algo\s+de\s+|musica\s+de\s+|a\s+)?(?P<query>.+?)\s*$'
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)(?:\s+|(?=\w{4,}))(?:me\s+)?(?!(?:mis?\b|lo\s+que\b|las?\s+canciones\s+(?:que|en)\b|la\s+(?:siguiente|anterior|que\s+sigue|pausa)\b|el\s+(?:volumen|sonido|audio|modo|aleatorio)\b|otra\s+(?:vez|cancion|rola|cosa)\b|en\s+(?:orden|desorden|aleatorio)\b|pausa\b|silencio\b|algo\s+de\b|musica\s+de\b|(?:la\s+)?musica\s+(?:al|en)\s|spotify\s+(?:al|en)\s))(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|escucha|quiero\s+escuchar)(?:\s+|(?=\w{4,}))(?:me\s+)?(?!(?:mis?\b|lo\s+que\b|las?\s+canciones\s+(?:que|en)\b|la\s+(?:siguiente|anterior|que\s+sigue|pausa)\b|el\s+(?:volumen|sonido|audio|modo|aleatorio)\b|otra\s+(?:vez|cancion|rola|cosa)\b|en\s+(?:orden|desorden|aleatorio)\b|pausa\b|silencio\b|(?:la\s+)?musica\s+(?:al|en)\s|spotify\s+(?:al|en)\s))(?:algo\s+de\s+|musica\s+de\s+|a\s+)?(?P<query>.+?)\s*$'
     examples:
       - pon la playlist de rock
       - reproduce musica electronica
@@ -266,12 +286,12 @@ intents:
       # "de". En espanol los titulos llevan "de" a menudo ("el dia que me
       # quieras de gardel") y los nombres de grupo casi nunca, asi que partir
       # por el ultimo acierta mucho mas veces que partir por el primero.
-      - '^(?:pon|ponme|pone|reproduce|reproduceme|quiero\s+escuchar|escuchar)\s+(?:me\s+)?(?:la|el|una|un)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
+      - '^(?:pon|ponme|pone|reproduce|reproduceme|quiero\s+escuchar|escuchar)(?:\s+|(?=\w{4,}))(?:me\s+)?(?:la|el|una|un)?\s*(?P<kind>cancion|tema|rola|track)\s+(?P<query>.+)\s+de\s+(?P<artist>.+?)\s*$'
       # "pon la playlist de rock" -> kind="playlist", query="rock".
       # `kind` viaja como la palabra que se dijo; la skill la traduce al tipo de
       # la Web API y lo que no reconoce lo deja en None (busqueda en cascada).
       # Por eso "musica" puede estar en la lista sin significar nada.
-      - '^(?:pon|ponme|reproduce|pone)\s+(?:me\s+)?(?:la|el|las|los|un|una|mi|mis)?\s*(?P<kind>lista\s+de\s+reproduccion|playlist|album|disco|cancion|tema|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
+      - '^(?:pon|ponme|reproduce|pone)(?:\s+|(?=\w{4,}))(?:me\s+)?(?:la|el|las|los|un|una|mi|mis)?\s*(?P<kind>lista\s+de\s+reproduccion|playlist|album|disco|cancion|tema|musica)\s+(?:de\s+|del\s+|de\s+la\s+)?(?P<query>.+?)\s*$'
       # "quiero escuchar a los beatles" -> query="los beatles". Es tambien la
       # red de seguridad de "pon despacito de luis fonsi", sin la palabra
       # "cancion": ahi el artista no se separa y se busca "despacito de luis
