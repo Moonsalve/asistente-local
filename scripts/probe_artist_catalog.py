@@ -24,10 +24,32 @@ LAS TRES VIAS QUE SE COMPARAN, y la tercera es la importante
     B) LLM+CATALOGO el LLM da SOLO el artista; el titulo sale de sus canciones
     C) SIN LLM      Spotify resuelve el artista el solo; el titulo, igual
 
-**Si C acierta tanto como B, el LLM sobra en esta capa.** La busqueda de
-Spotify ya es difusa, y puede que "tibi guerl" le lleve a TV Girl sin ayuda. Ese
-seria el mejor resultado posible: cero latencia, cero VRAM, menos codigo. La vez
-pasada no se hizo esta pregunta y se implemento de mas.
+**Si C acierta tanto como B, el LLM sobra en esta capa.** La vez pasada no se
+hizo esta pregunta y se implemento de mas.
+
+LO QUE YA SE MIDIO EN EL PC (2026-08-26, primera tanda)
+--------------------------------------------------------
+**La via C se cae, y se cae en el artista.** La busqueda de Spotify no aguanta
+la fonetica espanola:
+
+    "tibi guerl" -> TINI            (era TV Girl)
+    "uiquen"     -> ChocQuibTown    (era The Weeknd)
+    "metalica"   -> Metallica       correcto
+    "nirvana"    -> Nirvana         correcto
+
+Solo acierta cuando Whisper ya habia escrito bien el nombre. Asi que el LLM NO
+sobra: hace falta para el artista. La via B lo acerto 4 de 5, y el unico fallo
+fue donde el modelo hizo eco ("Tibi Guerl").
+
+Y una sorpresa a favor de lo que ya hay: en la via A, el LLM dijo "Nothing
+Matters" de Metallica —mal, es "Nothing ELSE Matters"— y la busqueda con
+filtros de campo mas la verificacion de cobertura **devolvieron la cancion
+correcta igualmente**. La red de abajo atrapa parte de lo que el guardia deja
+pasar.
+
+Queda por medir lo unico que no se pudo por dos fallos de esta sonda (403 en
+`artist_top_tracks` y HTTP 400 por pedir `limit=50`): **si el titulo bueno
+aparece entre las canciones que se traen del artista**, y a cuantas peticiones.
 
 Uso (en el PC, con Ollama y Spotify en marcha):
 
@@ -60,11 +82,24 @@ from asistente.skills.spotify import SpotifyClient, similitud  # noqa: E402
 
 MAL = " MAL "
 
-#: Cuantas canciones del artista se traen para emparejar. Dos llamadas: sus
-#: exitos (10, una peticion) mas una busqueda filtrada por artista. Se mide
-#: cuanto cuesta, que es parte de la decision.
+#: Tamano de pagina de la busqueda por artista.
+#:
+#: 20 y no 50: MEDIDO en el PC el 2026-08-26, `limit=50` devuelve HTTP 400
+#: "Invalid limit" pese a que la documentacion de Spotify da 50 como maximo del
+#: endpoint de busqueda. 20 es el valor por defecto y funciona.
+_PAGINA = 20
+
+#: Techo de canciones que se traen por artista. Tres peticiones en el peor caso.
+#: Es una sonda: aqui interesa saber si el titulo bueno APARECE, y con cuantas
+#: peticiones hay que pagarlo. Ese coste es parte de la decision.
+_MAX_CANCIONES = 60
+
+#: Los exitos del artista serian una sola peticion y cubririan lo que la gente
+#: pide normalmente, pero MEDIDO en el PC el 2026-08-26 el endpoint
+#: `/v1/artists/{id}/top-tracks` devuelve **403 Forbidden** para todos los
+#: artistas con esta aplicacion. Se sigue intentando —no cuesta nada y en otras
+#: cuentas funciona— pero ya no se depende de el.
 _TOP = 10
-_POR_ARTISTA = 50
 
 EJEMPLOS = (
     "ponlobes rock de tv girl",
@@ -105,28 +140,58 @@ def _resolver_artista(raw: Any, nombre: str) -> tuple[str, str] | None:
     return str(items[0]["id"]), str(items[0].get("name", "?"))
 
 
-def _canciones_del_artista(raw: Any, artist_id: str, nombre: str) -> list[dict[str, Any]]:
-    """Las canciones de ese artista, deduplicadas por nombre.
+def _http(exc: Exception) -> str:
+    """El codigo HTTP de un fallo de spotipy, sin las cuarenta lineas de URL.
 
-    Dos fuentes porque una sola no basta: sus exitos cubren lo que la gente pide
-    normalmente, y la busqueda filtrada llega a lo que no es un exito. Si el
-    titulo bueno no esta en esta lista, el emparejamiento no puede acertar — y
-    eso es justo lo que hay que ver aqui.
+    El mensaje de spotipy mete la URL entera con sus parametros y ocupa media
+    pantalla; lo unico accionable es el codigo y la razon del final.
+    """
+    codigo = getattr(exc, "http_status", None)
+    crudo = str(getattr(exc, "msg", "") or exc).replace("\n", " ")
+    # Fuera la URL (es la mitad del mensaje) y la coletilla vacia del final.
+    razon = " ".join(p for p in crudo.split() if "://" not in p)
+    razon = razon.removesuffix(", reason: None").strip(" -:")
+    return f"HTTP {codigo}: {razon[:50]}" if codigo else razon[:70]
+
+
+def _canciones_del_artista(
+    raw: Any, artist_id: str, nombre: str
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """`(canciones, avisos, peticiones)` de ese artista, deduplicadas por nombre.
+
+    Si el titulo bueno no esta en esta lista, el emparejamiento no puede
+    acertar. Por eso interesa tanto CUANTAS se traen como a que precio: cada
+    pagina es una peticion en mitad de un comando de voz.
     """
     encontradas: dict[str, dict[str, Any]] = {}
+    avisos: list[str] = []
+    peticiones = 0
+
+    # Los exitos serian la fuente barata (una peticion), pero devuelven 403 con
+    # esta aplicacion. Se intenta igual: si algun dia vuelve, sale gratis.
     try:
-        top = raw.artist_top_tracks(artist_id).get("tracks", [])[:_TOP]
-        for t in top:
+        peticiones += 1
+        for t in raw.artist_top_tracks(artist_id).get("tracks", [])[:_TOP]:
             encontradas.setdefault(normalize(str(t.get("name", ""))), t)
     except Exception as exc:
-        print(f"       (sin exitos del artista: {exc})")
-    try:
-        res = raw.search(q=f'artist:"{nombre}"', type="track", limit=_POR_ARTISTA)
-        for t in (res or {}).get("tracks", {}).get("items") or []:
+        avisos.append(f"sin exitos del artista ({_http(exc)})")
+
+    for offset in range(0, _MAX_CANCIONES, _PAGINA):
+        try:
+            peticiones += 1
+            res = raw.search(
+                q=f'artist:"{nombre}"', type="track", limit=_PAGINA, offset=offset
+            )
+        except Exception as exc:
+            avisos.append(f"busqueda cortada en offset {offset} ({_http(exc)})")
+            break
+        items = (res or {}).get("tracks", {}).get("items") or []
+        for t in items:
             encontradas.setdefault(normalize(str(t.get("name", ""))), t)
-    except Exception as exc:
-        print(f"       (sin busqueda por artista: {exc})")
-    return list(encontradas.values())
+        if len(items) < _PAGINA:
+            break
+
+    return list(encontradas.values()), avisos, peticiones
 
 
 def _emparejar(oido: str, pistas: list[dict[str, Any]]) -> list[tuple[float, dict[str, Any]]]:
@@ -139,29 +204,49 @@ def _emparejar(oido: str, pistas: list[dict[str, Any]]) -> list[tuple[float, dic
 
 
 def _via_catalogo(raw: Any, titulo_oido: str, artista: str, etiqueta: str) -> None:
-    """Imprime que sale de emparejar el titulo oido contra el catalogo real."""
+    """Imprime que sale de emparejar el titulo oido contra el catalogo real.
+
+    Se enseña el artista que sale ANTES que la cancion, y a proposito: si el
+    artista esta mal, lo de abajo ya no significa nada. MEDIDO en el PC, ahi es
+    donde se cae la via sin LLM ("tibi guerl" -> TINI, "uiquen" ->
+    ChocQuibTown), y con el nombre escondido al final costaba verlo.
+    """
     started = time.perf_counter()
     resuelto = _resolver_artista(raw, artista)
     if resuelto is None:
-        print(f"     {etiqueta:16} Spotify no reconoce al artista {artista!r}")
+        print(f"     {etiqueta:16} Spotify no reconoce a {artista!r}")
         return
     artist_id, nombre_real = resuelto
-    pistas = _canciones_del_artista(raw, artist_id, nombre_real)
+
+    # ¿Es el mismo nombre que se le pidio, o Spotify se ha ido a otro artista?
+    parecido = similitud(normalize(artista), normalize(nombre_real))
+    sello = "=" if parecido >= 72 else "!"
+    print(f"     {etiqueta:16} pidio {artista!r} {sello}> Spotify da {nombre_real!r}"
+          f"  (parecido {parecido:.0f})")
+    if sello == "!":
+        print("                      ^^ OJO: no es el mismo artista. Lo de abajo sobra.")
+
+    pistas, avisos, peticiones = _canciones_del_artista(raw, artist_id, nombre_real)
+    # +1 por resolver el artista: el coste que cuenta es el del comando entero,
+    # no el de una de sus mitades.
+    peticiones += 1
     dt = time.perf_counter() - started
+    for aviso in avisos:
+        print(f"                      ({aviso})")
 
     if not pistas:
-        print(f"     {etiqueta:16} {nombre_real!r}, pero sin canciones ({dt:.2f} s)")
+        print(f"                      sin canciones ({peticiones} peticiones, {dt:.2f} s)")
         return
 
     ranking = _emparejar(titulo_oido, pistas)
     mejor, segunda = ranking[0], (ranking[1] if len(ranking) > 1 else None)
-    margen = mejor[0] - segunda[0] if segunda else float("inf")
 
-    print(f"     {etiqueta:16} artista={nombre_real!r}  {len(pistas)} canciones  ({dt:.2f} s)")
+    print(f"                      {len(pistas)} canciones en "
+          f"{peticiones} peticiones, {dt:.2f} s")
     print(f"                      -> {_pista(mejor[1])}   ({mejor[0]:.1f})")
     if segunda:
         print(f"                      2a: {_pista(segunda[1])}   ({segunda[0]:.1f})"
-              f"   margen {margen:+.1f}")
+              f"   margen {mejor[0] - segunda[0]:+.1f}")
 
 
 def main() -> int:
@@ -171,6 +256,10 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.ERROR)
+    # spotipy registra cada 4xx con la URL entera y ocupa media pantalla. Los
+    # fallos que importan aqui ya se imprimen resumidos con `_http`.
+    logging.getLogger("spotipy.client").setLevel(logging.CRITICAL)
+
     config = Config.load(args.config)
     frases = list(args.frases) or list(EJEMPLOS)
 
@@ -244,24 +333,30 @@ def main() -> int:
     print("=" * 78)
     print("QUE MIRAR — y hay que mirar los TITULOS, no las notas:")
     print()
-    print("  1. ¿B acierta donde A falla? Entonces el catalogo del artista es")
-    print("     mejor que corregir el titulo a ciegas, y merece la pena el cambio.")
+    print("  1. EMPIEZA POR EL ARTISTA. Si la linea dice '!>', Spotify se fue a")
+    print("     otro artista y la cancion de debajo no significa nada. Es donde")
+    print("     se cayo la via C en la primera tanda: 'tibi guerl' -> TINI y")
+    print("     'uiquen' -> ChocQuibTown.")
     print()
-    print("  2. ¿C acierta tanto como B? ENTONCES EL LLM SOBRA EN ESTA CAPA:")
-    print("     Spotify ya resuelve el artista solo. Es el mejor resultado")
-    print("     posible —cero latencia, cero VRAM, menos codigo— y significaria")
-    print("     poder volver al modelo de 3B, o quitar el 7B del arranque.")
+    print("  2. ¿B acierta donde A falla? Entonces vale la pena sacar el titulo")
+    print("     del catalogo del artista en vez de fiarse del que da el LLM.")
     print()
-    print("  3. Mira el MARGEN con la segunda. Si la buena gana por poco, un")
+    print("  3. ¿C acierta tanto como B? Seria la mejor noticia posible —el LLM")
+    print("     sobraria en esta capa y se podria volver al 3B—, pero la primera")
+    print("     tanda dice que no: la busqueda de Spotify no aguanta la fonetica")
+    print("     espanola y solo acierta cuando Whisper ya habia escrito bien el")
+    print("     nombre. Confirmalo con TUS artistas antes de darlo por cerrado.")
+    print()
+    print("  4. Mira el MARGEN con la segunda. Si la buena gana por poco, un")
     print("     umbral no va a separarlas de forma fiable y estariamos repitiendo")
     print("     el error del guardia de verosimilitud.")
     print()
-    print("  4. ¿Sale el titulo bueno en la lista del artista? Si no aparece, no")
-    print("     hay emparejamiento que valga: habria que traer mas canciones, y")
-    print("     eso son mas peticiones en mitad de un comando de voz.")
+    print("  5. ¿Sale el titulo bueno en la lista del artista? Si no aparece, no")
+    print("     hay emparejamiento que valga: habria que traer mas canciones.")
     print()
-    print("  5. Ojo al coste en segundos de B y C: se suma al comando, igual que")
-    print("     el LLM. Si son dos peticiones a Spotify, se notan.")
+    print("  6. Ojo a las PETICIONES y a los segundos: se suman al comando. Si")
+    print("     hacen falta tres paginas para encontrar el titulo, eso pesa tanto")
+    print("     como el LLM en la decision.")
     return 0
 
 
