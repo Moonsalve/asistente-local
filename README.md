@@ -41,6 +41,7 @@ py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
 pip install -e ".[gpu]"            # CUDA: onnxruntime-gpu + cuBLAS + cuDNN
+pip install -e ".[tray]"           # icono de bandeja, para correr sin terminal
 
 # 2. Modelo del LLM
 ollama pull qwen2.5:3b-instruct-q4_K_M
@@ -62,6 +63,70 @@ Whisper (~1.6 GB). A partir de ahí quedan en caché.
 Al arrancar se comprueba en un segundo que estén el intérprete correcto, la voz
 de Piper, las librerías CUDA y Ollama con su modelo. Los problemas se reportan
 todos a la vez, antes de cargar nada pesado.
+
+### Arrancar sin terminal, en segundo plano
+
+Una vez que funciona desde la consola, esto lo convierte en un programa normal:
+doble clic, sin ventana negra, y con un icono en la bandeja para pararlo.
+
+```powershell
+python scripts/install_windows.py
+```
+
+Crea dos accesos directos idénticos a `pythonw.exe -m asistente`:
+
+| Dónde | Para qué |
+|---|---|
+| `Escritorio\Apolo.lnk` | arrancarlo con doble clic cuando quieras |
+| `Inicio\Apolo.lnk` | que arranque solo al iniciar sesión |
+
+Con `--no-autostart` se crea solo el del escritorio, y con `--uninstall` se
+quitan los dos.
+
+**Lo que verás:** el icono de la bandeja aparece enseguida y su globo dice
+*arrancando*; unos 30 segundos después pasa a *escuchando*, que es cuando ya
+puedes hablarle. Clic derecho sobre el icono: **Ver registro** y **Salir**.
+
+**Dónde queda el registro.** Sin consola no hay dónde imprimir, así que todo va
+a un fichero que rota:
+
+```
+%LOCALAPPDATA%\Apolo\logs\apolo.log
+```
+
+Es lo primero que hay que mirar si el doble clic no parece hacer nada. Si el
+arranque falla del todo —falta la voz de Piper, por ejemplo— sale además un
+cuadro de diálogo diciéndolo, porque un icono que nunca aparece no explica nada.
+
+**Antes de instalar los accesos directos, arráncalo una vez desde la terminal.**
+La primera ejecución descarga ~2 GB de modelos y abre el navegador para
+autorizar Spotify. Las dos cosas se ven mal desde un proceso sin ventana.
+
+**Solo puede haber uno.** El segundo arranque se niega y lo dice. No es una
+manía: dos instancias abren las dos el micrófono —cada orden se ejecuta dos
+veces— y cargan dos veces Whisper sobre un presupuesto de 8 GB de VRAM que ya
+va al 85%. El síntoma que llega al usuario ("va lentísimo y repite todo") no
+apunta ni de lejos a la causa.
+
+<details>
+<summary>Por qué un acceso directo y no un <code>.exe</code> empaquetado</summary>
+
+`cuda_setup.py` localiza las DLL de cuBLAS y cuDNN **en tiempo de ejecución**,
+recorriendo `site.getsitepackages()` en busca de `nvidia/cublas/bin`. Dentro de
+un binario de PyInstaller no hay site-packages: `getsitepackages()` no devuelve
+nada útil y el STT cae con `cublas64_12.dll is not found`.
+
+Arreglarlo obliga a reescribir `cuda_setup` para el modo congelado **y** a
+empotrar ~2 GB de DLL de NVIDIA en el bundle. A cambio de no escribir la ruta
+del intérprete en un acceso directo. `pythonw.exe` —el intérprete de Python sin
+consola— da el mismo doble clic sin ventana, y además sigue usando el venv de
+verdad: un `pip install` surte efecto sin reempaquetar nada.
+
+Tampoco se usa el Programador de tareas: puede ejecutar antes de que la sesión
+esté montada, y ahí el proceso no tiene acceso al micrófono. La carpeta de
+Inicio arranca dentro de tu sesión, que es donde vive el micrófono, y no pide
+permisos de administrador.
+</details>
 
 ### Modo texto (para desarrollar)
 

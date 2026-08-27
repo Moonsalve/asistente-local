@@ -46,6 +46,11 @@ gpu = [
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12>=9",
 ]
+# Icono en la bandeja del sistema. Solo hace falta para correr de fondo, sin
+# terminal: es entonces cuando no hay Ctrl-C y el icono es la unica forma de
+# parar el asistente. Sin estos paquetes arranca igual, sin icono y avisando.
+# Ver `src/asistente/tray.py`.
+tray = ["pystray>=0.19", "pillow>=10"]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "mypy>=1.13"]
 
 [project.scripts]

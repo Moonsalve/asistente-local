@@ -8,6 +8,20 @@ justo cuando mas atencion le prestas.
 Modo `--text` para desarrollo: salta microfono, STT y TTS, y deja probar el
 router y las skills escribiendo. Es lo unico que se puede ejecutar fuera de
 Windows, y sirve para iterar el catalogo sin hablarle al PC.
+
+ARRANQUE DE FONDO
+-----------------
+Lanzado con `pythonw.exe` no hay consola, y eso invalida tres supuestos del
+codigo: no hay `stdout`, el directorio de trabajo es arbitrario y no hay
+Ctrl-C. `runtime.py` explica por que; aqui se aplican en este orden, que no es
+casual:
+
+    1. rutas de los argumentos a absolutas   <- mientras el cwd sigue siendo el suyo
+    2. chdir a la raiz del proyecto          <- arregla TODAS las relativas de golpe
+    3. logging (a fichero siempre)           <- ya hay donde escribir los errores
+    4. instancia unica                       <- antes de reservar 1.6 GB de VRAM
+    5. icono de bandeja                      <- antes de los 30 s de carga, para
+                                                que el doble clic de senales de vida
 """
 
 from __future__ import annotations
@@ -15,6 +29,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 from pathlib import Path
 
 from asistente.config import Config, Secrets
@@ -26,7 +41,10 @@ from asistente.router.embedder import OnnxEmbedder
 from asistente.router.engine import Router
 from asistente.router.llm import OllamaFallback
 from asistente.router.semantic import SemanticMatcher
+from asistente.runtime import APP_NAME, anchor_working_directory, has_console, notify
+from asistente.singleton import SingleInstance
 from asistente.skills.factory import build_registry
+from asistente.tray import Tray
 
 log = logging.getLogger("asistente")
 
@@ -41,22 +59,122 @@ def _parse_args() -> argparse.Namespace:
         help="modo texto: escribe comandos en vez de hablarlos (sin microfono ni voz)",
     )
     parser.add_argument("--no-llm", action="store_true", help="desactiva la etapa 3")
+    parser.add_argument(
+        "--tray",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "icono en la bandeja del sistema. Por defecto se activa solo cuando no hay "
+            "consola, que es cuando hace falta: con terminal ya tienes Ctrl-C"
+        ),
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args()
 
 
-def main() -> int:
-    args = _parse_args()
-    configure_logging(args.verbose)
+def _keep_relative_if_missing(path: Path) -> Path:
+    """Absolutiza la ruta solo si el fichero existe donde estamos ahora.
 
-    config = Config.load(args.config)
+    Sutil pero necesario. `--config otro.yaml` se refiere al directorio desde el
+    que lanzaste el comando, asi que hay que fijarlo ANTES del `chdir`. Pero el
+    valor por defecto -`config.yaml`- se refiere al del PROYECTO, y absolutizarlo
+    contra el cwd de un acceso directo lanzado desde el Inicio de Windows daria
+    `C:\\Windows\\System32\\config.yaml`, que no existe.
+
+    La existencia del fichero distingue los dos casos sin tener que adivinar la
+    intencion: si esta aqui, era este; si no, que lo resuelva la raiz.
+    """
+    return path.resolve() if path.exists() else path
+
+
+def main() -> int:
+    """Punto de entrada. Ninguna excepcion puede salir de aqui sin dejar rastro.
+
+    Con consola, una traza sin capturar se ve y ya esta. De fondo, el proceso
+    desaparece sin mas: haces doble clic, el icono no llega a aparecer y no hay
+    ni error ni pista. Por eso el cuerpo va envuelto: la traza al registro y una
+    linea al usuario diciendole donde mirar.
+    """
+    args = _parse_args()
+
+    config_path = _keep_relative_if_missing(args.config)
+    commands_path = _keep_relative_if_missing(args.commands)
+    root = anchor_working_directory()
+    log_file = configure_logging(args.verbose)
+    log.info("%s arrancando desde %s", APP_NAME, root)
+
+    try:
+        return _run(args, config_path, commands_path, log_file, root)
+    except Exception:
+        log.exception("el asistente termino por un error inesperado")
+        _fatal("Error inesperado al arrancar.", log_file)
+        return 1
+
+
+def _fatal(message: str, log_file: Path | None) -> None:
+    """Cuenta un fallo fatal por un canal que el usuario vaya a ver."""
+    if log_file is not None:
+        message = f"{message}\n\nDetalles en:\n{log_file}"
+    log.error("%s", message.replace("\n", " "))
+    if not has_console():
+        notify(f"{APP_NAME} no pudo arrancar", message)
+
+
+def _run(
+    args: argparse.Namespace,
+    config_path: Path,
+    commands_path: Path,
+    log_file: Path | None,
+    root: Path,
+) -> int:
+    # El guardia de instancia unica va aqui, antes de cargar nada: rechazar el
+    # arranque cuesta milisegundos, y hacerlo despues significaria haber pedido
+    # ya 1.6 GB de VRAM que hay que devolver. Ver `singleton.py` para el
+    # desastre concreto que evita.
+    #
+    # NO APLICA AL MODO TEXTO. Lo que el guardia protege es el microfono y la
+    # VRAM de Whisper, y el modo texto no toca ninguno de los dos. Bloquearlo
+    # ademas romperia el uso normal durante el desarrollo: iterar el catalogo
+    # mientras el Apolo de verdad sigue escuchando de fondo.
+    lock = SingleInstance()
+    if not args.text and not lock.acquire():
+        _fatal(f"{APP_NAME} ya se esta ejecutando. Mira el icono de la bandeja.", log_file)
+        return 1
+
+    tray = None
+    stop = threading.Event()
+    want_tray = args.tray if args.tray is not None else (not has_console() and not args.text)
+    if want_tray:
+        tray = Tray(on_quit=stop.set, log_file=log_file, project_dir=root)
+        if tray.start():
+            tray.set_title("arrancando…")
+        else:
+            tray = None
+
+    try:
+        return _start(args, config_path, commands_path, log_file, stop, tray)
+    finally:
+        if tray is not None:
+            tray.stop()
+        lock.release()
+
+
+def _start(
+    args: argparse.Namespace,
+    config_path: Path,
+    commands_path: Path,
+    log_file: Path | None,
+    stop: threading.Event,
+    tray: Tray | None,
+) -> int:
+    config = Config.load(config_path)
     secrets = Secrets()
 
     # Antes de cargar nada pesado: Whisper tarda 25 s y el encoder otros 5, asi
     # que descubrir despues de todo eso que falta la voz de Piper es tiempo
     # tirado. En modo texto no hay TTS, asi que no aplica.
     if not args.text and not run_checks(config):
-        log.error("arranque abortado: corrige lo marcado como error y vuelve a intentarlo")
+        _fatal("Falta algo para poder arrancar. Revisa el registro.", log_file)
         return 1
 
     # Autodescubrimiento: anade lo instalado a la allowlist. Con cache, asi que
@@ -73,7 +191,7 @@ def main() -> int:
     )
     embedder.warmup()
 
-    catalog = load_catalog(args.commands, embedder)
+    catalog = load_catalog(commands_path, embedder)
     registry.verify_catalog({
         spec.tool for spec in catalog.intents.values() if spec.tool is not None
     })
@@ -103,7 +221,9 @@ def main() -> int:
     if args.text:
         return _run_text_mode(router, registry)
 
-    return _run_voice_mode(config, router, registry, spotify)
+    if tray is not None:
+        tray.set_title("escuchando")
+    return _run_voice_mode(config, router, registry, spotify, stop=stop)
 
 
 def _run_text_mode(router: object, registry: object) -> int:
@@ -195,6 +315,8 @@ def _run_voice_mode(
     router: object,
     registry: object,
     spotify: object | None = None,
+    *,
+    stop: threading.Event | None = None,
 ) -> int:
     from asistente.audio.capture import MicrophoneStream
     from asistente.audio.keyphrase import KeyphraseGate
@@ -250,6 +372,7 @@ def _run_voice_mode(
             keyphrase=keyphrase,
             vad_config=config.vad,
             speaker_gate=speaker_gate,
+            stop=stop,
         )
         try:
             assistant.run_forever()

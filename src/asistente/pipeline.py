@@ -13,6 +13,7 @@ Cada turno registra la latencia de cada etapa. Ese log es la materia prima de
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from time import perf_counter
 
@@ -76,6 +77,7 @@ class Assistant:
         keyphrase: KeyphraseGate | None = None,
         vad_config: VadConfig | None = None,
         speaker_gate: SpeakerGate | None = None,
+        stop: threading.Event | None = None,
     ) -> None:
         if (wake_word is None) == (keyphrase is None):
             raise ValueError("hay que dar exactamente uno: wake_word o keyphrase")
@@ -89,7 +91,17 @@ class Assistant:
         self._speaker = speaker
         self._vad_config = vad_config or VadConfig()
         self._speaker_gate = speaker_gate
+        # Corriendo de fondo no hay Ctrl-C: la salida llega por este evento,
+        # que pone el icono de la bandeja desde su propio hilo. Se comprueba
+        # ENTRE frases y no dentro de `record()` para no partir una grabacion
+        # a medias; el retardo maximo son los ~2 s que `record()` tarda en
+        # rendirse cuando nadie habla.
+        self._stop = stop
         self.metrics: list[TurnMetrics] = []
+
+    @property
+    def _stopping(self) -> bool:
+        return self._stop is not None and self._stop.is_set()
 
     def _passes_noise_gates(self, utterance: Utterance) -> bool:
         """Descarta ruido ANTES de gastar el STT.
@@ -144,6 +156,8 @@ class Assistant:
             self._run_transcript_mode()
         else:
             self._run_wakeword_mode()
+        if self._stopping:
+            log.info("bucle detenido a peticion")
 
     def _run_wakeword_mode(self) -> None:
         """Modelo dedicado siempre escuchando; solo transcribe tras activarse."""
@@ -151,6 +165,8 @@ class Assistant:
         blocks = self._mic.blocks()
         log.info("escuchando. Di la palabra clave para empezar.")
         for block in blocks:  # type: ignore[attr-defined]
+            if self._stopping:
+                break
             if not self._wake_word.detected(block):
                 continue
             try:
@@ -173,7 +189,7 @@ class Assistant:
         blocks = self._mic.blocks()
         log.info("escuchando. Di la palabra clave para empezar.")
 
-        while True:
+        while not self._stopping:
             try:
                 utterance = self._recorder.record(blocks, self._mic.preroll_audio())
                 if utterance.empty:

@@ -1,0 +1,349 @@
+"""Tests del arranque de fondo, sin terminal.
+
+Lo que se prueba aqui son exactamente los tres supuestos que `pythonw.exe`
+invalida (ver `runtime.py`), porque los tres fallan EN SILENCIO y por tanto
+ninguno se nota probando a mano:
+
+  - sin `stdout`, el registro se perdia entero y el asistente parecia ir bien
+  - sin el cwd correcto, no encuentra `config.yaml` ni la voz de Piper
+  - sin Ctrl-C, el bucle no tenia forma de terminar
+
+Ninguno de estos tests necesita Windows: el guardia de instancia unica tiene
+implementacion POSIX con `flock` precisamente para poder probarse aqui.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from asistente.audio.recorder import Utterance
+from asistente.logsetup import configure
+from asistente.pipeline import Assistant
+from asistente.runtime import anchor_working_directory, app_root, data_dir, has_console
+from asistente.singleton import SingleInstance
+from asistente.tray import Tray
+
+# --------------------------------------------------------------------------
+# runtime: donde estoy y donde escribo
+# --------------------------------------------------------------------------
+
+
+def test_the_project_root_is_the_one_that_holds_the_config() -> None:
+    """`app_root` busca marcadores, no cuenta directorios.
+
+    Si alguien mueve `runtime.py` de sitio, contar `parents[2]` daria una ruta
+    equivocada sin fallar, y el asistente arrancaria con la config de otro
+    sitio o sin ella.
+    """
+    root = app_root()
+    assert (root / "config.yaml").is_file()
+    assert (root / "commands.yaml").is_file()
+
+
+def test_the_data_directory_is_outside_the_repository() -> None:
+    """Los registros rotan; un checkout de git no es sitio para eso."""
+    assert app_root() not in data_dir().parents
+
+
+def test_anchoring_fixes_the_relative_paths_from_any_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El caso real: un acceso directo lanzado con cwd en otra parte.
+
+    Antes de anclar, `config.yaml` no existe desde ahi. Despues, si. Es la
+    prueba de que UNA llamada arregla todas las rutas relativas del proyecto.
+    """
+    monkeypatch.chdir(tmp_path)
+    assert not Path("config.yaml").is_file()
+
+    root = anchor_working_directory()
+
+    assert Path("config.yaml").is_file()
+    assert Path.cwd() == root
+
+
+def test_there_is_no_console_when_stderr_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bajo `pythonw`, `sys.stderr` vale literalmente None."""
+    monkeypatch.setattr(sys, "stderr", None)
+    assert has_console() is False
+
+
+# --------------------------------------------------------------------------
+# singleton: dos asistentes a la vez son un desastre silencioso
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _lock_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Aisla el fichero de bloqueo, para no chocar con un Apolo de verdad."""
+    monkeypatch.setattr("asistente.singleton.data_dir", lambda: tmp_path)
+    return tmp_path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="en Windows el guardia es un mutex")
+def test_a_second_instance_is_refused(_lock_dir: Path) -> None:
+    """Lo que evita: dos Whisper en 8 GB de VRAM y cada orden ejecutada dos veces."""
+    first = SingleInstance("prueba")
+    second = SingleInstance("prueba")
+    try:
+        assert first.acquire() is True
+        assert second.acquire() is False
+    finally:
+        first.release()
+        second.release()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="en Windows el guardia es un mutex")
+def test_releasing_lets_the_next_one_in(_lock_dir: Path) -> None:
+    """Un bloqueo que no se suelta es peor que no tener bloqueo: deja el
+    asistente sin poder arrancar nunca mas."""
+    first = SingleInstance("prueba")
+    assert first.acquire() is True
+    first.release()
+
+    second = SingleInstance("prueba")
+    try:
+        assert second.acquire() is True
+    finally:
+        second.release()
+
+
+# --------------------------------------------------------------------------
+# logsetup: sin consola, el fichero es el unico testigo
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _restore_logging() -> object:
+    """`configure()` toca estado global (handlers, sys.stdout/stderr).
+
+    Sin esto, el primer test que simula "sin consola" dejaria `sys.stderr`
+    apuntando a un logger y pytest perderia su propia salida en los tests
+    siguientes.
+    """
+    root = logging.getLogger()
+    saved = (root.handlers[:], root.level, sys.stdout, sys.stderr)
+    yield
+    root.handlers[:] = saved[0]
+    root.setLevel(saved[1])
+    sys.stdout, sys.stderr = saved[2], saved[3]
+
+
+def test_everything_reaches_the_file_when_there_is_no_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _restore_logging: object
+) -> None:
+    monkeypatch.setattr("asistente.logsetup.has_console", lambda: False)
+    path = tmp_path / "apolo.log"
+
+    assert configure(log_file=path) == path
+    logging.getLogger("asistente").info("cargando whisper")
+
+    assert "cargando whisper" in path.read_text(encoding="utf-8")
+
+
+def test_a_library_writing_to_a_dead_stderr_does_not_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _restore_logging: object
+) -> None:
+    """La regresion concreta: bajo `pythonw`, `sys.stderr` es None y cualquier
+    `sys.stderr.write(...)` de una libreria de terceros revienta con
+    AttributeError dentro de codigo que no podemos envolver en un try."""
+    monkeypatch.setattr("asistente.logsetup.has_console", lambda: False)
+    monkeypatch.setattr(sys, "stderr", None)
+    path = tmp_path / "apolo.log"
+    configure(log_file=path)
+
+    sys.stderr.write("piper dice algo raro\n")  # type: ignore[union-attr]
+
+    assert "piper dice algo raro" in path.read_text(encoding="utf-8")
+
+
+def test_a_log_file_that_cannot_be_opened_does_not_stop_the_assistant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _restore_logging: object
+) -> None:
+    """Disco lleno o carpeta sin permisos: se arranca a ciegas, pero se arranca.
+
+    Aqui se fuerza el fallo poniendo un FICHERO donde tendria que ir la carpeta
+    del registro, que es un error de E/S real y no un mock.
+
+    Y ademas escribir en stderr tiene que seguir siendo inofensivo. Sin consola
+    y sin fichero, el root se queda SIN handlers: si el redirector siguiera
+    activo, `logging` caeria en `lastResort`, que escribe en `sys.stderr`, que
+    es el propio redirector, que vuelve a registrar. Recursion infinita girando
+    la CPU, en el unico caso en que se da.
+    """
+    monkeypatch.setattr("asistente.logsetup.has_console", lambda: False)
+    blocker = tmp_path / "no-soy-carpeta"
+    blocker.write_text("", encoding="utf-8")
+
+    assert configure(log_file=blocker / "apolo.log") is None
+
+    sys.stderr.write("y esto no puede colgarse\n")
+
+
+# --------------------------------------------------------------------------
+# pipeline: la salida sin Ctrl-C
+# --------------------------------------------------------------------------
+
+
+class _Mic:
+    sample_rate = 16_000
+
+    def blocks(self) -> object:
+        # Muy por encima de lo que los tests deberian consumir: si el bucle no
+        # mira el evento de parada, el test falla por el contador, no por
+        # quedarse colgado para siempre.
+        return iter(range(1_000))
+
+    def preroll_audio(self) -> np.ndarray:
+        return np.zeros(0, dtype=np.float32)
+
+
+class _CountingRecorder:
+    """Devuelve siempre una frase vacia, que el bucle descarta y sigue."""
+
+    def __init__(self, stop: object, after: int) -> None:
+        self._stop = stop
+        self._after = after
+        self.calls = 0
+
+    def record(self, blocks: object, preroll: np.ndarray) -> Utterance:
+        self.calls += 1
+        if self.calls >= self._after:
+            self._stop.set()  # type: ignore[attr-defined]
+        return Utterance(total_s=0.5)
+
+
+class _CountingWakeWord:
+    def __init__(self, stop: object, after: int) -> None:
+        self._stop = stop
+        self._after = after
+        self.calls = 0
+
+    def detected(self, block: object) -> bool:
+        self.calls += 1
+        if self.calls >= self._after:
+            self._stop.set()  # type: ignore[attr-defined]
+        return False
+
+    def reset(self) -> None:
+        pass
+
+
+def _assistant(**kwargs: object) -> Assistant:
+    """Ensambla un Assistant con lo minimo: aqui solo se prueba el bucle."""
+    return Assistant(
+        _Mic(),  # type: ignore[arg-type]
+        kwargs.pop("recorder", None),  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_the_transcript_loop_stops_when_asked() -> None:
+    """Modo por defecto del asistente. La parada se mira ENTRE frases, asi que
+    el bucle da exactamente las vueltas pedidas y ni una mas."""
+    import threading
+
+    stop = threading.Event()
+    recorder = _CountingRecorder(stop, after=3)
+    assistant = _assistant(recorder=recorder, keyphrase=object(), stop=stop)
+
+    assistant.run_forever()
+
+    assert recorder.calls == 3
+
+
+def test_the_wakeword_loop_stops_when_asked() -> None:
+    import threading
+
+    stop = threading.Event()
+    wake_word = _CountingWakeWord(stop, after=5)
+    assistant = _assistant(recorder=None, wake_word=wake_word, stop=stop)
+
+    assistant.run_forever()
+
+    assert wake_word.calls == 5
+
+
+def test_without_a_stop_event_nothing_changes() -> None:
+    """El modo terminal de siempre: sin evento, `_stopping` es False y el bucle
+    es el `while True` de antes. Lo garantiza no haber tocado ese camino."""
+    assistant = _assistant(recorder=None, keyphrase=object())
+    assert assistant._stopping is False
+
+
+# --------------------------------------------------------------------------
+# arranque completo: nada puede desaparecer sin dejar rastro
+# --------------------------------------------------------------------------
+
+
+def test_an_unexpected_crash_leaves_a_trace_in_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _restore_logging: object
+) -> None:
+    """El modo de fallo que motiva todo el envoltorio de `main()`.
+
+    De fondo, una excepcion sin capturar hace que el proceso se evapore: haces
+    doble clic, el icono no llega a aparecer y no queda ni error ni pista. Este
+    test recorre el arranque de verdad -anclar, configurar el registro, avisar-
+    con el cwd en otro sitio, que es la situacion del acceso directo.
+    """
+    from asistente import __main__ as entry
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["asistente"])
+    monkeypatch.setattr("asistente.logsetup.log_dir", lambda: tmp_path)
+    # Los dos modulos preguntan por su cuenta si hay consola: `logsetup` para
+    # decidir si escribe a fichero, `__main__` para decidir si avisa al usuario.
+    monkeypatch.setattr("asistente.logsetup.has_console", lambda: False)
+    monkeypatch.setattr(entry, "has_console", lambda: False)
+
+    def _boom(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("se cayo Ollama")
+
+    monkeypatch.setattr(entry, "_run", _boom)
+    avisos: list[tuple[str, str]] = []
+    monkeypatch.setattr(entry, "notify", lambda title, msg: avisos.append((title, msg)))
+
+    assert entry.main() == 1
+
+    registro = (tmp_path / "apolo.log").read_text(encoding="utf-8")
+    assert "se cayo Ollama" in registro
+    assert "RuntimeError" in registro
+    # Y el usuario se entera por un canal que va a ver, no solo por el fichero.
+    assert avisos and "apolo.log" in avisos[0][1]
+
+
+# --------------------------------------------------------------------------
+# tray: es opcional, y tiene que serlo de verdad
+# --------------------------------------------------------------------------
+
+
+def test_the_assistant_starts_without_pystray(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Poner None en sys.modules hace que `import pystray` lance ImportError,
+    que es exactamente lo que pasa en una maquina sin el paquete."""
+    monkeypatch.setitem(sys.modules, "pystray", None)
+
+    tray = Tray(on_quit=lambda: None)
+
+    assert tray.start() is False
+
+
+def test_quitting_from_the_tray_sets_the_stop_event() -> None:
+    """El cableado que apaga el asistente: el menu no para nada por su cuenta,
+    solo pone el evento que mira el bucle."""
+    import threading
+
+    stop = threading.Event()
+    tray = Tray(on_quit=stop.set)
+
+    tray._quit()
+
+    assert stop.is_set()

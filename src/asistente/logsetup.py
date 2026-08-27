@@ -26,12 +26,23 @@ seguir adivinando.
 
 from __future__ import annotations
 
+import io
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+from asistente.runtime import has_console, log_dir
 
 #: Loggers de terceros que registran cada peticion HTTP en INFO. En el arranque
 #: son decenas de lineas que tapan lo que si importa.
 NOISY_LOGGERS = ("httpx", "httpcore", "huggingface_hub", "urllib3", "filelock")
+
+#: Rotacion del registro en disco. Un turno son un par de lineas, asi que 2 MB
+#: son semanas de uso; lo que se quiere evitar es el fichero que crece sin
+#: limite en una maquina que nadie mira.
+_MAX_BYTES = 2 * 1024 * 1024
+_BACKUPS = 3
 
 
 class RobustStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
@@ -69,31 +80,161 @@ class RobustStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
             pass
 
 
-def configure(verbose: bool = False) -> None:
-    """Deja el logging listo. Llamar lo primero en `main()`."""
+class _StreamToLog(io.TextIOBase):
+    """Objeto tipo fichero que reenvia lo que le escriban al registro.
+
+    Sin consola, `sys.stdout` y `sys.stderr` valen `None`. `print()` lo tolera
+    -CPython comprueba y no hace nada- pero cualquier libreria que llame a
+    `sys.stderr.write(...)` por su cuenta revienta con AttributeError, y lo hace
+    dentro de codigo de terceros donde no hay un try que lo recoja.
+
+    Sustituirlos por esto convierte esas escrituras en lineas de registro en vez
+    de en una excepcion. Se acumula hasta el salto de linea porque muchas
+    librerias escriben la linea en varios trozos y un registro por trozo seria
+    ilegible.
+    """
+
+    def __init__(self, logger: logging.Logger, level: int) -> None:
+        super().__init__()
+        self._logger = logger
+        self._level = level
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line.strip():
+                self._logger.log(self._level, "%s", line.rstrip())
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer.strip():
+            self._logger.log(self._level, "%s", self._buffer.rstrip())
+        self._buffer = ""
+
+    def isatty(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+
+class _Discard(io.TextIOBase):
+    """Sustituto de `sys.stderr` cuando no hay ni consola ni registro.
+
+    Acepta la misma firma que `_StreamToLog` para poder intercambiarlos sin un
+    `if` en cada uso. Tira lo que le escriban, que es lo unico honesto que se
+    puede hacer cuando no queda ningun sitio donde escribir: lo que evita es que
+    una libreria de terceros tumbe el asistente con un AttributeError.
+    """
+
+    def __init__(self, logger: logging.Logger, level: int) -> None:
+        super().__init__()
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def isatty(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+
+def configure(
+    verbose: bool = False,
+    *,
+    to_file: bool = True,
+    log_file: Path | None = None,
+) -> Path | None:
+    """Deja el logging listo. Llamar lo primero en `main()`.
+
+    Devuelve la ruta del registro en disco, o `None` si no se pudo abrir.
+
+    EL REGISTRO EN DISCO NO ES OPCIONAL CUANDO NO HAY CONSOLA, y por eso se
+    escribe SIEMPRE, tambien con terminal: asi la opcion "ver registro" del
+    icono de la bandeja encuentra siempre algo, y el fichero de un arranque de
+    fondo que fallo se puede comparar con el de uno que funciono.
+    """
+    console = has_console()
+
     # Reconfigurar antes de crear el handler: asi hereda ya el stream en UTF-8.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             try:
-                stream.reconfigure(encoding="utf-8", errors="replace")
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
             except (OSError, ValueError):
                 pass
 
-    handler = RobustStreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%H:%M:%S"
-        )
-    )
-
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
-    # force: reemplaza cualquier handler que una libreria haya instalado al
-    # importarse, que es otra via por la que acababa emitiendo un handler sin
-    # reconfigurar.
+    # Reemplaza cualquier handler que una libreria haya instalado al importarse,
+    # que es otra via por la que acababa emitiendo un handler sin reconfigurar.
     for existing in root.handlers[:]:
         root.removeHandler(existing)
-    root.addHandler(handler)
+
+    if console:
+        handler = RobustStreamHandler(sys.stderr)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%H:%M:%S"
+            )
+        )
+        root.addHandler(handler)
+
+    path = _add_file_handler(root, log_file) if to_file else None
+
+    if not console:
+        # Ahora que hay donde escribir, se tapan los `None`. Va DESPUES de
+        # instalar el handler de fichero: al reves, las primeras escrituras
+        # caerian en un logger sin handlers.
+        #
+        # Y SOLO SI HAY HANDLER, que es la parte que no es obvia. Sin handlers,
+        # `logging` recurre a `lastResort`, que escribe en `sys.stderr`... que
+        # seria este mismo objeto, que vuelve a registrar, que vuelve a
+        # lastResort. Recursion infinita, y ademas en el unico caso en que se
+        # da: el registro en disco no se pudo abrir, o sea cuando algo ya iba
+        # mal. Un cuelgue girando la CPU es mucho peor que perder unas lineas.
+        sink = _StreamToLog if root.handlers else _Discard
+        sys.stdout = sink(logging.getLogger("stdout"), logging.INFO)  # type: ignore[assignment]
+        sys.stderr = sink(logging.getLogger("stderr"), logging.ERROR)  # type: ignore[assignment]
 
     for name in NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    return path
+
+
+def _add_file_handler(root: logging.Logger, log_file: Path | None) -> Path | None:
+    """Instala el registro rotativo. Devuelve la ruta, o `None` si no pudo.
+
+    Un fallo aqui NO puede impedir el arranque: si el disco esta lleno o el
+    directorio no se puede crear, el asistente tiene que seguir funcionando
+    aunque sea a ciegas. Pero se avisa por la consola si la hay.
+    """
+    try:
+        path = log_file if log_file is not None else log_dir() / "apolo.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            path,
+            maxBytes=_MAX_BYTES,
+            backupCount=_BACKUPS,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        if sys.stderr is not None:
+            print(f"[logging] no se pudo abrir el registro en disco: {exc}", file=sys.stderr)
+        return None
+
+    # Con fecha, al contrario que en consola: este fichero sobrevive a la
+    # sesion y "23:16:42" sin dia no sirve para nada al mirarlo una semana
+    # despues.
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
+    )
+    root.addHandler(handler)
+    return path

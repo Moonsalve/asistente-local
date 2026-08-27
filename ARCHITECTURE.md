@@ -418,6 +418,39 @@ modelos se cargan y se calientan con inferencia sintética antes de empezar a
 escuchar, y Ollama corre con `keep_alive: -1` para que el modelo no se descargue
 nunca de VRAM.
 
+### Correr de fondo: `pythonw.exe`, no un binario empaquetado
+
+Un asistente de voz que hay que arrancar desde una terminal y dejar la ventana
+abierta no se usa. Pero quitar la consola invalida tres supuestos del código, y
+los tres fallan **en silencio**, que es lo que los hace peligrosos:
+
+| Lo que se pierde | Lo que rompe | Dónde se arregla |
+|---|---|---|
+| `sys.stdout` / `sys.stderr` valen `None` | el registro entero se perdía y el asistente parecía ir bien | `logsetup.py`: fichero rotativo + redirección de los `None` |
+| el directorio de trabajo es arbitrario | ninguna ruta relativa resuelve: config, comandos, voz de Piper | `runtime.anchor_working_directory()` |
+| no hay Ctrl-C | el bucle no tenía forma de terminar | evento de parada en `pipeline.py` + `tray.py` |
+
+**Por qué no PyInstaller.** `cuda_setup.py` localiza las DLL de cuBLAS y cuDNN
+en tiempo de ejecución recorriendo `site.getsitepackages()`. Dentro de un
+binario congelado no hay site-packages, así que el STT caería con
+`cublas64_12.dll is not found`. Arreglarlo obliga a reescribir `cuda_setup` para
+el modo congelado y a empotrar ~2 GB de DLL de NVIDIA. Un acceso directo a
+`pythonw.exe` da el mismo doble clic sin ventana, sigue usando el venv real —un
+`pip install` surte efecto sin reempaquetar— y cuesta un script.
+
+**Por qué la carpeta de Inicio y no el Programador de tareas.** El Programador
+puede ejecutar antes de que la sesión esté montada, y ahí el proceso no tiene
+acceso al micrófono ni al dispositivo de audio predeterminado. La carpeta de
+Inicio arranca dentro de la sesión del usuario, que es donde vive el micrófono,
+y no pide permisos de administrador.
+
+**Por qué instancia única.** Dos copias abren las dos el micrófono, así que cada
+orden se ejecuta dos veces, y cargan dos veces Whisper sobre un presupuesto que
+ya va al 85%. El síntoma —"va lentísimo y repite todo"— no apunta a la causa.
+El guardia es un mutex con nombre del kernel y no un fichero con el PID: si el
+proceso muere de forma brusca, el kernel lo libera solo, mientras que un fichero
+se queda ahí y bloquea todos los arranques siguientes.
+
 ---
 
 ## Mediciones
