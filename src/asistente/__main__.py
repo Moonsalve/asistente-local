@@ -64,8 +64,8 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "icono en la bandeja del sistema. Por defecto se activa solo cuando no hay "
-            "consola, que es cuando hace falta: con terminal ya tienes Ctrl-C"
+            "icono en la bandeja del sistema. Activo por defecto salvo en modo texto; "
+            "--no-tray lo quita"
         ),
     )
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -120,6 +120,50 @@ def _fatal(message: str, log_file: Path | None) -> None:
         notify(f"{APP_NAME} no pudo arrancar", message)
 
 
+def _wants_tray(args: argparse.Namespace) -> bool:
+    """Si toca poner icono en la bandeja.
+
+    Activo tambien CON consola. Antes solo salia bajo `pythonw`, con el
+    argumento de que con terminal ya tienes Ctrl-C. Cierto, pero el efecto
+    practico era que quien probaba el arranque desde la terminal no veia icono
+    y no tenia forma de distinguir "aqui no toca" de "esta roto". Un icono de
+    mas no molesta; no poder comprobar si funciona, si.
+
+    En modo texto no: no hay nada de fondo que parar, y el icono se quedaria
+    puesto por encima de un bucle que ya se cierra con Ctrl-C.
+    """
+    if args.tray is not None:
+        return args.tray
+    return not args.text
+
+
+def _tray_unavailable(reason: str | None, log_file: Path | None) -> None:
+    """Cuenta que no hay icono por un canal que el usuario vaya a ver.
+
+    No impide asistir, asi que no es fatal y el arranque sigue. Pero deja el
+    proceso sin la unica forma de pararlo que no sea el Administrador de
+    tareas, y eso no se puede dejar solo en el registro: sin consola, un aviso
+    ahi no lo lee nadie. Es justo el fallo silencioso que `runtime.py` describe.
+
+    Sin bloquear: `MessageBoxW` no vuelve hasta que alguien pulse Aceptar, y el
+    asistente tiene que seguir cargando mientras tanto.
+    """
+    detail = reason or "no se pudo crear el icono"
+    log.warning("sin icono de bandeja: %s", detail)
+    if has_console():
+        return
+
+    message = (
+        f"{APP_NAME} esta funcionando, pero sin icono en la bandeja.\n\n"
+        f"{detail}\n\n"
+        "Para pararlo tendras que usar el Administrador de tareas "
+        "(busca pythonw.exe)."
+    )
+    if log_file is not None:
+        message += f"\n\nDetalles en:\n{log_file}"
+    notify(f"{APP_NAME} sin icono", message, blocking=False)
+
+
 def _run(
     args: argparse.Namespace,
     config_path: Path,
@@ -143,12 +187,12 @@ def _run(
 
     tray = None
     stop = threading.Event()
-    want_tray = args.tray if args.tray is not None else (not has_console() and not args.text)
-    if want_tray:
+    if _wants_tray(args):
         tray = Tray(on_quit=stop.set, log_file=log_file, project_dir=root)
         if tray.start():
             tray.set_title("arrancando…")
         else:
+            _tray_unavailable(tray.failure, log_file)
             tray = None
 
     try:
@@ -373,6 +417,7 @@ def _run_voice_mode(
             vad_config=config.vad,
             speaker_gate=speaker_gate,
             stop=stop,
+            follow_up=config.follow_up,
         )
         try:
             assistant.run_forever()

@@ -15,7 +15,7 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 4 etapas + skills | **Hecha y verificada** (354 tests) |
+| 2 | Router de 4 etapas + skills | **Hecha y verificada** (379 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 4.5 | El LLM corrige el nombre de la canción | Escrito y con tests; **sin verificar en el PC** |
@@ -88,6 +88,24 @@ quitan los dos.
 *arrancando*; unos 30 segundos después pasa a *escuchando*, que es cuando ya
 puedes hablarle. Clic derecho sobre el icono: **Ver registro** y **Salir**.
 
+**Si no ves el icono**, lo más probable es que esté ahí y no se vea: Windows 11
+mete los iconos nuevos en el desplegable de la flecha (`^`) de la barra de
+tareas. Ábrelo y arrastra el de Apolo a la barra para dejarlo fijo. Si tampoco
+está ahí:
+
+```powershell
+python scripts/diagnose_tray.py
+```
+
+Pone un icono de verdad durante unos segundos y dice por cuál de los cuatro
+motivos posibles no lo estabas viendo. El más habitual después del anterior es
+que falte el extra: `pip install -e ".[tray]"`.
+
+El icono sale **también cuando arrancas desde la terminal**. Ahí no hace falta
+—tienes Ctrl-C— pero así "no hay icono" y "aquí no toca poner icono" dejan de
+ser indistinguibles, que era justo lo que impedía comprobar si funcionaba. Con
+`--no-tray` se quita.
+
 **Dónde queda el registro.** Sin consola no hay dónde imprimir, así que todo va
 a un fichero que rota:
 
@@ -129,6 +147,54 @@ Inicio arranca dentro de tu sesión, que es donde vive el micrófono, y no pide
 permisos de administrador.
 </details>
 
+### Encadenar órdenes sin repetir *"Apolo"*
+
+Después de cada orden el asistente sigue escuchando **5 segundos**. En ese rato
+no hace falta la palabra clave:
+
+> — *Apolo, sube el volumen*
+> — *más*
+> — *más*
+> — *pasa la canción*
+
+Cada orden aceptada reinicia la cuenta, así que encadenar cinco no consume una
+ventana de veinticinco segundos.
+
+**Dentro de la ventana no hay palabra clave**, y la palabra clave es la única
+defensa real contra ejecutar lo que se oye de la tele. Por eso ahí no vale
+todo: una frase solo se ejecuta si pasa **los tres filtros a la vez**.
+
+| Filtro | Qué descarta |
+|---|---|
+| Está en `follow_up.tools` | abrir programas, buscar en la web, poner una canción concreta |
+| El router la resolvió **sin LLM** | conversación: la clase `_fallback` manda al modelo todo lo que no parece un comando |
+| Verificación de locutor, si la tienes activada | otras voces — aquí sí se aplica, a diferencia del turno normal |
+
+Lo que queda dentro es solo reproducción y volumen. El criterio para añadir
+algo a la lista no es *"me resulta cómodo"* sino **"¿qué pasa si lo dispara la
+tele?"**: si la respuesta no es *"lo deshago diciendo lo contrario"*, no entra.
+El peor caso admitido es que salte una canción y digas *"anterior"*.
+
+Todo lo que la ventana ignora queda en el registro con el motivo:
+
+```
+INFO asistente.pipeline: seguimiento ignorado (hubo que escalar al LLM): 'oye pasame la sal'
+```
+
+Es el dato con el que decidir si a `follow_up.tools` le falta algo o si la
+ventana está recogiendo conversación ajena y hay que acortarla. Se ajusta en
+`config.yaml`:
+
+```yaml
+follow_up:
+  enabled: true
+  window_s: 5.0
+  tools: [media.next, media.previous, media.play_pause,
+          volume.step, volume.set, volume.mute, volume.query]
+```
+
+Con `enabled: false` vuelve a hacer falta decir *"Apolo"* cada vez.
+
 ### Modo texto (para desarrollar)
 
 Escribes los comandos en vez de hablarlos. Salta micrófono, STT y TTS, así que
@@ -166,7 +232,7 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 354 tests, ~3 s
+PYTHONPATH=src pytest -q                           # 379 tests, ~3 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
 PYTHONPATH=src python scripts/diagnose_apps.py     # qué apps se abren y cuáles se cierran
 PYTHONPATH=src python scripts/diagnose_spotify.py  # dispositivos, tus playlists, me gusta

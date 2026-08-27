@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 
 #: Nombre corto de la aplicacion. Se usa para el directorio de datos, el mutex
@@ -117,16 +118,28 @@ def anchor_working_directory() -> Path:
     return root
 
 
-def notify(title: str, message: str) -> None:
+def notify(title: str, message: str, *, blocking: bool = True) -> None:
     """Avisa al usuario cuando no hay consola donde imprimir el problema.
 
     Sin esto, un arranque que falla en el preflight -falta la voz de Piper, por
     ejemplo- se traduce en que haces doble clic y no pasa absolutamente nada.
     El registro lo explica, pero hay que saber que existe y donde esta.
 
+    `blocking=False` para lo que NO es fatal. `MessageBoxW` no vuelve hasta que
+    alguien pulsa Aceptar, asi que un aviso de arranque llamado desde el hilo
+    principal dejaria el asistente sin cargar hasta que alguien mire la
+    pantalla. Lo fatal si bloquea: ahi no queda nada por hacer, y si el proceso
+    se muriera antes de que el cuadro aparezca no se veria el error.
+
     En cualquier otro sitio, o si el cuadro de dialogo falla, se cae a stderr:
     esta funcion no puede ser nunca la causa de que un error no se vea.
     """
+    if not blocking:
+        threading.Thread(
+            target=notify, args=(title, message), name="notify", daemon=True
+        ).start()
+        return
+
     if sys.platform == "win32":
         try:
             import ctypes

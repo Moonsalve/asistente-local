@@ -14,18 +14,22 @@ implementacion POSIX con `flock` precisamente para poder probarse aqui.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from asistente.audio.recorder import Utterance
+from asistente.config import FollowUpConfig
 from asistente.logsetup import configure
 from asistente.pipeline import Assistant
 from asistente.runtime import anchor_working_directory, app_root, data_dir, has_console
 from asistente.singleton import SingleInstance
+from asistente.skills.registry import SkillRegistry
 from asistente.tray import Tray
 
 # --------------------------------------------------------------------------
@@ -235,13 +239,20 @@ class _CountingWakeWord:
 
 
 def _assistant(**kwargs: object) -> Assistant:
-    """Ensambla un Assistant con lo minimo: aqui solo se prueba el bucle."""
+    """Ensambla un Assistant con lo minimo: aqui solo se prueba el bucle.
+
+    Sin ventana de seguimiento: lo que se prueba aqui es que el bucle se para
+    cuando se le pide. La ventana tiene sus propios tests en
+    `test_follow_up.py`, y dejarla activa meteria su maquina de estados dentro
+    de un test que no habla de ella.
+    """
+    kwargs.setdefault("follow_up", FollowUpConfig(enabled=False))
     return Assistant(
         _Mic(),  # type: ignore[arg-type]
         kwargs.pop("recorder", None),  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
-        None,  # type: ignore[arg-type]
+        SkillRegistry([]),
         None,  # type: ignore[arg-type]
         **kwargs,  # type: ignore[arg-type]
     )
@@ -336,14 +347,172 @@ def test_the_assistant_starts_without_pystray(monkeypatch: pytest.MonkeyPatch) -
     assert tray.start() is False
 
 
-def test_quitting_from_the_tray_sets_the_stop_event() -> None:
+def test_quitting_from_the_tray_sets_the_stop_event(monkeypatch: pytest.MonkeyPatch) -> None:
     """El cableado que apaga el asistente: el menu no para nada por su cuenta,
-    solo pone el evento que mira el bucle."""
+    solo pone el evento que mira el bucle.
+
+    El plazo de salida forzosa se desactiva para el test. No es cosmetico: deja
+    armado un temporizador que llama a `os._exit(0)` a los 4 segundos, y eso
+    mata a pytest a media ejecucion sin dar error, porque el codigo de salida
+    es 0.
+    """
     import threading
 
+    monkeypatch.setattr("asistente.tray._force_exit_after", lambda _: None)
     stop = threading.Event()
     tray = Tray(on_quit=stop.set)
 
     tray._quit()
 
     assert stop.is_set()
+
+
+# --------------------------------------------------------------------------
+# tray: "start() dijo que si" tiene que significar que hay icono
+# --------------------------------------------------------------------------
+#
+# Es el fallo que motivo estos tests. `start()` devolvia True en cuanto
+# arrancaba el hilo, asi que cualquier problema DENTRO de pystray -que ocurre
+# en ese hilo, no en el que llama- dejaba al asistente creyendo que tenia icono
+# y al usuario sin el, sin una linea en el log que lo dijera.
+#
+# Se falsea `pystray` entero y se sustituye el dibujo: lo que se prueba es el
+# ciclo de vida del icono, no si Pillow sabe pintar un microfono.
+
+
+class _FakePystray:
+    """Modulo `pystray` de mentira, con lo justo que usa `tray.py`."""
+
+    class Menu:
+        SEPARATOR = object()
+
+        def __init__(self, *items: object) -> None:
+            self.items = items
+
+    class MenuItem:
+        def __init__(self, text: str, action: object = None, **kwargs: object) -> None:
+            self.text = text
+
+    def __init__(self, comportamiento: str) -> None:
+        self._comportamiento = comportamiento
+        self.Icon = self._make_icon()
+
+    def _make_icon(self) -> type:
+        comportamiento = self._comportamiento
+
+        class Icon:
+            def __init__(self, name: str, image: object, title: str, menu: object) -> None:
+                self.visible = False
+                self.title = title
+                self.parado = False
+
+            def run(self, setup: object = None) -> None:
+                if comportamiento == "revienta":
+                    raise RuntimeError("no hay bandeja en este escritorio")
+                if comportamiento == "cuelga":
+                    threading.Event().wait(5)  # nunca confirma
+                    return
+                setup(self)  # type: ignore[operator]
+                # `run()` no vuelve hasta que se para el icono, igual que el de
+                # verdad: si volviera, el test no distinguiria un icono puesto
+                # de uno que aparecio y desaparecio.
+                threading.Event().wait(5)
+
+            def stop(self) -> None:
+                self.parado = True
+
+        return Icon
+
+
+def _con_pystray(
+    monkeypatch: pytest.MonkeyPatch, comportamiento: str
+) -> None:
+    monkeypatch.setitem(sys.modules, "pystray", _FakePystray(comportamiento))
+    monkeypatch.setattr("asistente.tray._draw", lambda size: object())
+
+
+def test_start_waits_until_pystray_confirms_the_icon(monkeypatch: pytest.MonkeyPatch) -> None:
+    _con_pystray(monkeypatch, "bien")
+
+    tray = Tray(on_quit=lambda: None)
+
+    assert tray.start() is True
+    assert tray.failure is None
+
+
+def test_start_fails_when_the_backend_crashes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El caso concreto que devolvia True. La excepcion ocurre en el hilo del
+    icono, donde el `threading` por defecto se la come sin que nadie se
+    entere."""
+    _con_pystray(monkeypatch, "revienta")
+
+    tray = Tray(on_quit=lambda: None)
+
+    assert tray.start() is False
+    assert tray.failure is not None
+    assert "no hay bandeja" in tray.failure
+
+
+def test_start_fails_when_pystray_never_confirms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un backend que ni falla ni arranca. Sin plazo, `start()` se quedaria
+    esperando para siempre y el asistente no llegaria a cargar nada."""
+    _con_pystray(monkeypatch, "cuelga")
+    monkeypatch.setattr("asistente.tray.STARTUP_TIMEOUT_S", 0.05)
+
+    tray = Tray(on_quit=lambda: None)
+
+    assert tray.start() is False
+    assert tray.failure is not None
+    assert "no respondio" in tray.failure
+
+
+def test_the_tray_is_on_by_default_even_with_a_console() -> None:
+    """Lo que hacia que "no hay icono" fuera indistinguible de "aqui no toca".
+
+    Antes solo se ponia bajo `pythonw`, asi que probar el arranque desde la
+    terminal nunca mostraba icono, y eso no se podia distinguir de un icono
+    roto.
+    """
+    from asistente import __main__ as entry
+
+    assert entry._wants_tray(argparse.Namespace(tray=None, text=False)) is True
+    # En modo texto no: no hay nada de fondo que parar.
+    assert entry._wants_tray(argparse.Namespace(tray=None, text=True)) is False
+    # Y lo que pidas explicitamente manda en los dos sentidos.
+    assert entry._wants_tray(argparse.Namespace(tray=False, text=False)) is False
+    assert entry._wants_tray(argparse.Namespace(tray=True, text=True)) is True
+
+
+def test_a_missing_icon_is_reported_to_the_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sin consola, un aviso en el registro no lo lee nadie, y quedarse sin
+    icono es quedarse sin forma de parar el asistente. Tiene que salir por un
+    canal visible aunque el arranque continue."""
+    from asistente import __main__ as entry
+
+    monkeypatch.setattr(entry, "has_console", lambda: False)
+    avisos: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        entry, "notify", lambda title, msg, **kwargs: avisos.append((title, msg))
+    )
+
+    entry._tray_unavailable("falta pystray", None)
+
+    assert avisos
+    assert "falta pystray" in avisos[0][1]
+    assert "Administrador de tareas" in avisos[0][1]
+
+
+def test_with_a_console_the_missing_icon_only_goes_to_the_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un cuadro de dialogo delante de quien ya esta mirando una terminal
+    sobra: ahi el aviso del log se ve."""
+    from asistente import __main__ as entry
+
+    monkeypatch.setattr(entry, "has_console", lambda: True)
+    avisos: list[object] = []
+    monkeypatch.setattr(entry, "notify", lambda *a, **k: avisos.append(a))
+
+    entry._tray_unavailable("falta pystray", None)
+
+    assert avisos == []

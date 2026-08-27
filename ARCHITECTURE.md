@@ -532,6 +532,57 @@ El guardia es un mutex con nombre del kernel y no un fichero con el PID: si el
 proceso muere de forma brusca, el kernel lo libera solo, mientras que un fichero
 se queda ahí y bloquea todos los arranques siguientes.
 
+**El icono tiene que confirmar que existe.** `Tray.start()` devolvía `True` en
+cuanto arrancaba el hilo de `pystray`. Pero el icono se crea *dentro* de ese
+hilo, así que cualquier fallo ahí —backend que no arranca, bandeja que rechaza
+el icono— ocurría después de que `start()` hubiera dicho que sí, y el
+`threading` por defecto se comía la excepción. Resultado: el asistente creía
+tener icono, el usuario no lo tenía y no había una línea en el registro que lo
+dijera. Ahora `start()` espera a que `pystray` llame a su callback de arranque,
+y si no llega —o si revienta— devuelve `False` **con el motivo**, que se le
+enseña al usuario con un cuadro de diálogo cuando no hay consola. Quedarse sin
+icono no impide asistir, pero deja el proceso sin más forma de pararse que el
+Administrador de tareas, y eso no puede enterarse uno leyendo un fichero de log
+que no sabe que existe.
+
+### La ventana de seguimiento: qué sustituye a la palabra clave
+
+Repetir *"Apolo"* para cada paso de volumen convierte un ajuste de tres
+segundos en uno de quince. Tras cada orden el asistente sigue escuchando 5 s
+sin exigir la clave, y cada orden aceptada renueva el plazo.
+
+El problema es lo que se está quitando: **la palabra clave es la única defensa
+real contra ejecutar lo que se oye de la televisión**. El router no la
+sustituye —su trabajo es elegir el mejor intent, no decidir si le hablaban a
+él—, así que dentro de la ventana hacen falta otros filtros. Son tres, y tienen
+que pasar los tres:
+
+| Filtro | Qué descarta | Por qué ese |
+|---|---|---|
+| allowlist `follow_up.tools` | abrir apps, buscar en la web, poner una canción | acota el **daño**, no la probabilidad |
+| etapa del router ≠ `llm` | conversación ajena | si hizo falta el modelo, no era una orden simple; y la clase `_fallback` manda ahí todo lo que no parece un comando |
+| verificación de locutor | otras voces | aquí **sí** se aplica, al revés que en el turno normal: allí acababas de decir la clave, aquí no ha dicho nada nadie |
+
+El criterio de la allowlist es explícito y está escrito como test: *si la tele
+lo dispara, ¿se deshace hablando?* Reproducción y volumen sí —el peor caso es
+que salte una canción y digas "anterior"—; `open.target` abriría ventanas
+encima de lo que estés haciendo y no.
+
+**Oírse a sí mismo era el fallo que la hacía inútil.** El callback del driver de
+audio no para nunca: mientras Piper habla por los altavoces, la voz del propio
+asistente se encola en el buffer del micrófono (que aguanta ~5 s). Con palabra
+clave eso era inofensivo —el asistente no dice "Apolo"—, pero sin ella se
+transcribiría a sí mismo y se contestaría solo. Por eso la ventana espera a que
+el TTS termine **y** vacía el buffer (`MicrophoneStream.discard_pending()`)
+antes de volver a escuchar. El plazo empieza a contar cuando calla, no cuando
+termina de ejecutar: si no, una confirmación de dos segundos se comería media
+ventana.
+
+Cada frase rechazada se registra **con el motivo**, no como "ignorada" a secas.
+Es la diferencia entre poder ajustar esto y tener que adivinar: el motivo dice
+si a la allowlist le falta un nombre o si la ventana está recogiendo
+conversación y hay que acortarla.
+
 ---
 
 ## Mediciones

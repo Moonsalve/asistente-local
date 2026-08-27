@@ -97,6 +97,66 @@ class VadConfig(BaseModel):
     min_snr_db: float = Field(default=6.0, ge=0.0)
 
 
+class FollowUpConfig(BaseModel):
+    """Ventana para encadenar ordenes sin repetir la palabra clave.
+
+    Tras ejecutar una orden, el asistente sigue escuchando unos segundos. Es lo
+    que convierte "Apolo, sube el volumen" / "Apolo, mas" / "Apolo, mas" en
+    "Apolo, sube el volumen" / "mas" / "mas", que es como se ajusta el volumen
+    de verdad: a tientas y en varios pasos.
+
+    LO QUE SE ESTA QUITANDO
+    -----------------------
+    Dentro de la ventana NO hay palabra clave, y la palabra clave es la unica
+    defensa real contra ejecutar lo que oye de la tele o de una conversacion
+    ajena. Por eso la ventana no acepta cualquier cosa, sino tres filtros a la
+    vez, y los tres tienen que pasar:
+
+      1. la accion esta en `tools` (abajo). Nada de abrir programas, buscar en
+         la web o reproducir algo concreto: solo lo reversible.
+      2. el router la resolvio SIN LLM. Si hubo que escalar al modelo, por
+         definicion no era una orden simple y no toca ejecutarla a ciegas.
+      3. si tienes verificacion de locutor activada, tambien tiene que pasarla.
+         Aqui SI se aplica -a diferencia del turno normal- porque aqui nadie ha
+         dicho la palabra clave.
+
+    El peor caso que queda es que la tele diga algo que suene a "siguiente" y
+    salte una cancion. Se arregla diciendo "anterior". Ese es el listón: dentro
+    de la ventana solo entra lo que se deshace hablando.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    #: TUNING. Cuanto se sigue escuchando tras cada orden. 5 s dan tiempo a
+    #: pensar la siguiente sin dejar el microfono abierto de forma perceptible.
+    #: Cada orden aceptada REINICIA la cuenta, asi que encadenar cinco ordenes
+    #: no necesita una ventana de 25 s.
+    #:
+    #: El minimo es 1 s y no 0: por debajo de `pipeline._MIN_LISTEN_S` el bucle
+    #: no llega a grabar nada, con lo que la ventana quedaria activada pero sin
+    #: efecto. Rechazarlo al cargar la config es mejor que descubrirlo hablando.
+    window_s: float = Field(default=5.0, ge=1.0, le=60.0)
+
+    #: Allowlist por nombre de SKILL (no de intent): es lo que trae el
+    #: `ToolCall` que sale del router. `volume.step` cubre subir y bajar.
+    #:
+    #: Anadir aqui es facil y por eso hay que pensarlo: la pregunta no es "es
+    #: comodo?" sino "que pasa si lo dispara la tele?". `open.target` abriria
+    #: ventanas encima de lo que estes haciendo; `web.search`, un navegador.
+    tools: frozenset[str] = frozenset(
+        {
+            "media.next",
+            "media.previous",
+            "media.play_pause",
+            "volume.step",
+            "volume.set",
+            "volume.mute",
+            "volume.query",
+        }
+    )
+
+
 class SttConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -388,6 +448,7 @@ class Config(BaseModel):
     discovery: DiscoveryConfig = DiscoveryConfig()
     wake_word: WakeWordConfig = WakeWordConfig()
     vad: VadConfig = VadConfig()
+    follow_up: FollowUpConfig = FollowUpConfig()
     stt: SttConfig = SttConfig()
     speaker: SpeakerConfig = SpeakerConfig()
     router: RouterConfig = RouterConfig()

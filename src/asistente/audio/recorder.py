@@ -22,6 +22,10 @@ from asistente.config import VadConfig
 
 log = logging.getLogger(__name__)
 
+#: Cuanto se espera a que alguien empiece a hablar antes de rendirse. Tras la
+#: palabra clave son 2 s: si dijiste "Apolo" y no sigues, no ibas a seguir.
+DEFAULT_WAIT_S = 2.0
+
 
 @dataclass(frozen=True, slots=True)
 class Utterance:
@@ -48,11 +52,18 @@ class UtteranceRecorder:
         self._config = config
         self._sample_rate = sample_rate
 
-    def record(self, blocks: object, preroll: np.ndarray) -> Utterance:
+    def record(
+        self, blocks: object, preroll: np.ndarray, *, wait_s: float = DEFAULT_WAIT_S
+    ) -> Utterance:
         """Consume bloques hasta detectar el final de la frase.
 
         Devuelve una `Utterance` vacia si nunca se detecto voz (activacion en
         falso de la wake word).
+
+        `wait_s` acota SOLO la espera previa al habla, no la frase: una vez
+        empiezas a hablar se graba entera hasta el silencio final. Lo usa la
+        ventana de seguimiento para no pasarse del plazo esperando a alguien
+        que ya no va a decir nada.
         """
         self._vad.reset()
         collected: list[np.ndarray] = [preroll] if preroll.size else []
@@ -87,7 +98,7 @@ class UtteranceRecorder:
                 break
 
             # Activacion en falso: la wake word disparo pero nadie hablo.
-            if not speaking and total_s >= 2.0:
+            if not speaking and total_s >= wait_s:
                 log.debug("no se detecto voz tras la wake word")
                 return Utterance(total_s=total_s)
 
