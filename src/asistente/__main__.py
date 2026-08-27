@@ -181,7 +181,7 @@ def _start(
     # solo la primera ejecucion (o una vez al dia) paga el coste de enumerar.
     config = augment_config(config)
 
-    registry, spotify = build_registry(config, secrets)
+    registry, spotify = build_registry(config, secrets, use_llm=not args.no_llm)
 
     log.info("cargando encoder de embeddings...")
     embedder = OnnxEmbedder(

@@ -43,6 +43,21 @@ Tres cosas lo contienen:
    obsoleto en silencio: si alguien anade "pon el modo repeticion" a otro
    intent, el test lo caza.
 
+EL VERBO PUEDE VENIR PEGADO AL TITULO
+-------------------------------------
+Whisper turbo une el verbo a lo que sigue cuando el titulo va en ingles:
+"Ponlovers Rock de TV Girl". Los patrones exigian espacio detras del verbo, asi
+que ninguno casaba. MEDIDO sobre este catalogo, de diez transcripciones pegadas
+CERO llegaban a `spotify.play`: tres acababan en `spotify.liked` —que pone tus
+me gusta en vez de lo que pediste— y siete escalaban al LLM del router, que es
+de donde salia el "se salta la cancion".
+
+Los patrones aceptan ahora espacio O CUATRO O MAS caracteres pegados. El cuatro
+es lo que hace segura la regla: los pronombres encliticos del espanol —la, lo,
+le, las, los, les, me, te, se, nos— caben todos en tres, y "ponla" es reanudar
+lo que ya suena, no pedir una cancion titulada "la". No hay lista de
+excepciones que mantener al dia, porque la regla no enumera nada.
+
 Lo que el regex NO decide es el significado. "pon X de Y" entrega una hipotesis
 —titulo X, artista Y—; que eso sea de verdad una cancion lo decide Spotify al
 buscarla. Es el mismo reparto que en `open.target`: la forma la reconoce el

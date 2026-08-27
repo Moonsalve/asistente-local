@@ -12,6 +12,7 @@ from asistente.skills.apps import CloseAppSkill
 from asistente.skills.base import Skill
 from asistente.skills.browser import Browser
 from asistente.skills.media import NextTrackSkill, PlayPauseSkill, PreviousTrackSkill
+from asistente.skills.music_ai import build_resolver
 from asistente.skills.opening import OpenTargetSkill
 from asistente.skills.registry import SkillRegistry
 from asistente.skills.spotify import (
@@ -33,19 +34,39 @@ from asistente.skills.volume import (
 from asistente.skills.web import WebSearchSkill
 
 
-def build_registry(config: Config, secrets: Secrets) -> tuple[SkillRegistry, SpotifyClient]:
+def build_registry(
+    config: Config,
+    secrets: Secrets,
+    *,
+    use_llm: bool = True,
+) -> tuple[SkillRegistry, SpotifyClient]:
     """Instancia todas las skills. Devuelve tambien el cliente de Spotify para
-    que el arranque pueda conectarlo y calentarlo antes del primer comando."""
+    que el arranque pueda conectarlo y calentarlo antes del primer comando.
+
+    `use_llm=False` (lo pone `--no-llm`) deja fuera todo lo que necesite Ollama,
+    no solo la etapa 3 del router: en la Mac de desarrollo no hay ninguno
+    corriendo y el arranque tiene que seguir siendo instantaneo.
+    """
     spotify = SpotifyClient(config, secrets)
     browser = Browser.from_path(config.web.browser, config.web.browser_path)
     use_keys = config.spotify.fallback_to_media_keys
     volume = VolumeController(spotify)
 
+    # El resolvedor comparte modelo con el router —no cabe un segundo en 8 GB de
+    # VRAM—, asi que no se calienta aparte: el `warmup()` del router ya lo dejo
+    # cargado. Si algun dia dejan de compartirlo, esto necesita su propio
+    # calentamiento o la primera cancion pagara los 40 s de carga.
+    resolver = (
+        build_resolver(config.llm)
+        if use_llm and config.spotify.resolve_with_llm
+        else None
+    )
+
     skills: list[Skill] = [
         NextTrackSkill(spotify, use_keys),
         PreviousTrackSkill(spotify, use_keys),
         PlayPauseSkill(spotify, use_keys),
-        SpotifyPlaySkill(spotify),
+        SpotifyPlaySkill(spotify, resolver),
         LikedSkill(spotify),
         WhatSongSkill(spotify),
         LikeSkill(spotify),

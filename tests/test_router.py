@@ -234,6 +234,57 @@ def test_titles_the_encoder_cannot_know_are_resolved_by_shape(router: Router) ->
         assert result.tool_call.args["artist"] == artist
 
 
+def test_whisper_gluing_the_verb_to_the_title_still_routes(router: Router) -> None:
+    """EL CASO REPORTADO EN EL PC: el asistente "se saltaba la canción".
+
+    Turbo pega el verbo al título cuando el título va en inglés: *"Ponlovers
+    Rock de TV Girl"* por "pon Lovers Rock de TV Girl". Los patrones exigían
+    `\\s+` detrás del verbo, así que ninguno casaba y la frase caía a la
+    semántica o al LLM.
+
+    MEDIDO sobre este catálogo, antes del arreglo: de diez transcripciones
+    pegadas, **cero** llegaban a `spotify.play`. Tres se iban a `spotify.liked`
+    —que pone tus me gusta en vez de lo que pediste— y siete escalaban al LLM
+    del router, que es de donde salía el salto de canción.
+
+    No es un problema que arregle corregir el nombre después: si la frase nunca
+    llegó a `spotify.play`, da igual lo bien escrito que esté el título.
+    """
+    casos = [
+        ("ponlovers rock de tv girl", "lovers rock", "tv girl"),
+        ("ponlobes rock de tv girl", "lobes rock", "tv girl"),
+        ("ponblinding lights de the weeknd", "blinding lights", "the weeknd"),
+        ("pondespacito de luis fonsi", "despacito", "luis fonsi"),
+        ("reproducelovers rock de tv girl", "lovers rock", "tv girl"),
+    ]
+    for phrase, query, artist in casos:
+        result = router.route(phrase)
+        assert result.stage is Stage.PATTERN, f"{phrase!r} llegó a {result.stage}"
+        assert result.tool_call is not None
+        assert result.tool_call.name == "spotify.play", f"{phrase!r} -> {result.tool_call.name}"
+        assert result.tool_call.args["query"] == query
+        assert result.tool_call.args["artist"] == artist
+
+
+def test_the_glued_form_does_not_swallow_the_enclitic_pronouns(router: Router) -> None:
+    """LA OTRA MITAD DEL ARREGLO, y la que lo hace seguro.
+
+    "Ponla", "ponlo", "ponle" se refieren a algo que YA suena y nunca piden una
+    canción nueva. Si el patrón de verbo pegado se los llevara, pedir "ponla"
+    buscaría en Spotify una canción llamada "la".
+
+    Se contienen sin lista de excepciones: el verbo pegado exige **cuatro o más
+    caracteres** detrás, y todos los pronombres enclíticos del español —la, lo,
+    le, las, los, les, me, te, se, nos— caben en tres. La regla no hay que
+    mantenerla al día porque no enumera nada.
+    """
+    for phrase in ["ponla", "ponlo", "ponlas", "ponlos", "ponle", "ponles"]:
+        result = router.route(phrase)
+        assert result.stage is not Stage.PATTERN, (
+            f"{phrase!r} lo reclamó un patrón: {result.tool_call}"
+        )
+
+
 def test_a_bare_title_without_an_artist_also_works(router: Router) -> None:
     """Sin "de" no hay artista que separar, pero el molde sigue siendo
     reconocible y el título entero se busca tal cual."""

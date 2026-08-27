@@ -67,7 +67,11 @@ router:
   threshold: 0.25
 
 llm:
-  model: qwen2.5:3b-instruct-q4_K_M
+  # Un solo modelo para el router y para corregir titulos de canciones: en 8 GB
+  # de VRAM no caben dos junto a Whisper (1.6 + 4.7 + 0.5 KV = 6.8 de 8).
+  # Si el log de Ollama menciona capas en CPU, vuelve a qwen2.5:3b-instruct-q4_K_M
+  # desde config.local.yaml.
+  model: qwen2.5:7b-instruct-q4_K_M
   host: http://127.0.0.1:11434
   keep_alive: -1          # numero, no cadena: "-1" da HTTP 400 en Ollama
   temperature: 0.0
@@ -82,6 +86,12 @@ spotify:
   enabled: true
   redirect_uri: http://127.0.0.1:8888/callback
   fallback_to_media_keys: true
+  # El LLM corrige el titulo cuando Spotify no encuentra nada. Solo se paga en
+  # las peticiones que YA habian fallado: lo que hoy funciona no se ralentiza.
+  resolve_with_llm: true
+  # Indexar tus me gusta al arrancar (hasta 20 peticiones) para emparejar contra
+  # ellos antes de tocar el catalogo publico. Es el paso barato de la cascada.
+  index_library: true
 
 # ---------------------------------------------------------------------------
 # ALLOWLIST DE APLICACIONES
