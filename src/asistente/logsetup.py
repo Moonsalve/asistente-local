@@ -26,6 +26,7 @@ seguir adivinando.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import sys
@@ -52,7 +53,20 @@ class RobustStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
     no funciona: cuando un `write` revienta con UnicodeEncodeError, el
     TextIOWrapper se queda con el codificador en mal estado y la siguiente
     escritura vuelve a fallar aunque el texto ya sea ASCII puro. Medido.
+
+    EL `flush` VA APARTE DEL `write`, y no es un detalle. Medido en Windows: la
+    linea sale en pantalla y es el flush posterior el que revienta con
+    `OSError: [WinError 1] Incorrect function`, segun que consola. Metiendo los
+    dos en el mismo `try`, cada linea del arranque salia seguida de un
+    "[logging] no se pudo emitir un registro de ...". O sea que el mensaje de
+    error decia justo lo contrario de lo que habia pasado -el registro SI se
+    emitio- y duplicaba la salida entera. Un diagnostico falso es peor que
+    ninguno: manda a buscar el fallo donde no esta.
     """
+
+    def __init__(self, stream: object | None = None) -> None:
+        super().__init__(stream)  # type: ignore[arg-type]
+        self._flush_failed = False
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -62,9 +76,31 @@ class RobustStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
             # quepa se sustituye por '?' en vez de tumbar el registro entero.
             safe = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
             self.stream.write(safe + self.terminator)
-            self.flush()
         except Exception:
             self.handleError(record)
+            return
+        self._flush_quietly()
+
+    def _flush_quietly(self) -> None:
+        """Vacia el buffer sin montar un escandalo si no se puede.
+
+        Se avisa UNA vez y no en cada linea: es una propiedad de la consola,
+        no de cada registro, asi que repetirlo doscientas veces solo tapa lo
+        que se quiere leer. El texto ya esta escrito; como mucho se quedara en
+        el buffer hasta la siguiente linea.
+        """
+        try:
+            self.flush()
+        except Exception as exc:
+            if self._flush_failed:
+                return
+            self._flush_failed = True
+            with contextlib.suppress(Exception):
+                self.stream.write(
+                    f"[logging] esta consola no admite flush ({type(exc).__name__}: {exc}); "
+                    f"la salida puede ir a tirones. No se pierde nada: el registro "
+                    f"completo esta en el fichero.{self.terminator}"
+                )
 
     def handleError(self, record: logging.LogRecord) -> None:
         """Una linea util en vez del '--- Logging error ---' generico."""

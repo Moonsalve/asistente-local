@@ -35,7 +35,7 @@ from pathlib import Path
 from asistente.config import Config, Secrets
 from asistente.discovery.auto import augment_config
 from asistente.logsetup import configure as configure_logging
-from asistente.preflight import run_checks
+from asistente.preflight import describe_interpreter, run_checks
 from asistente.router.catalog import load_catalog
 from asistente.router.embedder import OnnxEmbedder
 from asistente.router.engine import Router
@@ -153,9 +153,14 @@ def _tray_unavailable(reason: str | None, log_file: Path | None) -> None:
     if has_console():
         return
 
+    # Con el interprete DELANTE. Un acceso directo puede apuntar a un python
+    # distinto del que usas en la terminal, y entonces "pystray esta instalado"
+    # y "a este proceso le falta pystray" son ciertas a la vez. Sin este dato
+    # el usuario no tiene forma de ver que son dos entornos.
     message = (
         f"{APP_NAME} esta funcionando, pero sin icono en la bandeja.\n\n"
         f"{detail}\n\n"
+        f"Interprete: {describe_interpreter()}\n\n"
         "Para pararlo tendras que usar el Administrador de tareas "
         "(busca pythonw.exe)."
     )

@@ -45,10 +45,22 @@ FRAME_SAMPLES_V5 = 512
 
 
 def _default_model_path() -> Path:
-    """Silero viene incluido en openWakeWord, que ya es una dependencia."""
-    import openwakeword
+    """Silero sale del directorio de modelos de openWakeWord, que ya es una
+    dependencia. Si no esta descargado, se descarga.
 
-    return Path(openwakeword.__file__).parent / "resources" / "models" / "silero_vad.onnx"
+    OJO CON EL "VIENE INCLUIDO": el paquete pip de openWakeWord trae solo el
+    codigo. Los .onnx se bajan aparte, y quien los baja es `WakeWordDetector`
+    al construirse... que en modo `transcript` no se construye nunca. Este VAD
+    en cambio se usa en LOS DOS modos, asi que no puede dar por hecho que otro
+    componente haya pasado por aqui antes: se asegura el mismo.
+    """
+    from asistente.audio.wakeword import download_models, models_dir
+
+    path = models_dir() / "silero_vad.onnx"
+    if not path.is_file():
+        log.warning("falta %s; se descarga ahora", path.name)
+        download_models()
+    return path
 
 
 class SileroVad:

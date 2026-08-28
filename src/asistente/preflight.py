@@ -13,6 +13,11 @@ Las comprobaciones distinguen dos niveles:
   - ERROR: impide arrancar (falta la voz del TTS).
   - AVISO: degrada pero deja funcionar (sin Ollama no hay etapa 3, pero el
     router sigue resolviendo la inmensa mayoria de comandos).
+
+UNA COMPROBACION QUE MIENTE ES PEOR QUE NO TENERLA. `ensure_wakeword_models`
+descarga en vez de avisar precisamente por eso: avisaba de que los modelos se
+descargarian solos al arrancar, cosa que no pasaba en el modo por defecto, y el
+asistente moria 30 segundos despues con un error que apuntaba a otro sitio.
 """
 
 from __future__ import annotations
@@ -96,20 +101,54 @@ def check_tts_voice(config: Config) -> Problem | None:
     )
 
 
-def check_wakeword_models() -> Problem | None:
-    """Los modelos de openWakeWord se descargan aparte del paquete pip.
+def ensure_wakeword_models() -> Problem | None:
+    """Descarga los modelos de openWakeWord si faltan. Fatal si no lo consigue.
 
-    No es fatal porque el detector los descarga solo la primera vez que se
-    construye; esto solo sirve para avisar de que habra una descarga.
+    ESTO ANTES SOLO AVISABA, Y EL AVISO ERA FALSO. Decia "se descargaran solos
+    al arrancar", que solo es cierto en modo `openwakeword`: ahi los descarga
+    `WakeWordDetector` al construirse. En modo `transcript` -el de por defecto,
+    y el unico que admite "Apolo"- ese detector no se construye nunca, asi que
+    no los descargaba nadie.
+
+    Pero `silero_vad.onnx` vive en ese mismo directorio y lo necesita el
+    endpointing en LOS DOS MODOS. Resultado: el asistente cargaba Whisper (25
+    s) y Piper, y solo entonces reventaba con un NO_SUCHFILE de onnxruntime
+    apuntando a un fichero dentro de site-packages, que parece una instalacion
+    corrupta y no lo es.
+
+    Se descarga aqui, en el segundo cero, en vez de avisar: la promesa ya
+    estaba escrita, lo que faltaba era cumplirla. Son ~30 MB una sola vez.
     """
-    from asistente.audio.wakeword import models_are_installed
+    from asistente.audio.wakeword import download_models, models_are_installed, models_dir
+
+    if models_are_installed():
+        return None
+
+    try:
+        download_models()
+    except Exception as exc:
+        return Problem(
+            fatal=True,
+            title=(
+                "No se pudieron descargar los modelos de openWakeWord "
+                f"({type(exc).__name__}: {exc})"
+            ),
+            fix=(
+                "Sin `silero_vad.onnx` no hay deteccion de voz y el asistente no\n"
+                "     arranca en ningun modo. Reintentalo con:\n"
+                "     python scripts/download_models.py"
+            ),
+        )
 
     if models_are_installed():
         return None
     return Problem(
-        fatal=False,
-        title="Faltan los modelos de openWakeWord (no vienen en el paquete pip)",
-        fix="Se descargaran solos al arrancar (~30 MB). Manual: python scripts/download_models.py",
+        fatal=True,
+        title=f"La descarga de openWakeWord no dejo todos los modelos en {models_dir()}",
+        fix=(
+            "Quedo a medias. Borra ese directorio y reintenta:\n"
+            "     python scripts/download_models.py"
+        ),
     )
 
 
@@ -151,7 +190,7 @@ def run_checks(config: Config) -> bool:
         for problem in (
             check_interpreter(),
             check_tts_voice(config),
-            check_wakeword_models(),
+            ensure_wakeword_models(),
             check_cuda_packages(),
             check_ollama(config),
         )

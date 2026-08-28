@@ -15,6 +15,7 @@ implementacion POSIX con `flock` precisamente para poder probarse aqui.
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import sys
 import threading
@@ -187,6 +188,70 @@ def test_a_log_file_that_cannot_be_opened_does_not_stop_the_assistant(
     assert configure(log_file=blocker / "apolo.log") is None
 
     sys.stderr.write("y esto no puede colgarse\n")
+
+
+# --------------------------------------------------------------------------
+# consolas que escriben pero no dejan hacer flush
+# --------------------------------------------------------------------------
+
+
+class _ConsolaSinFlush(io.StringIO):
+    """Consola de Windows medida: `write` va bien, `flush` da WinError 1."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushes = 0
+
+    def flush(self) -> None:
+        self.flushes += 1
+        raise OSError(1, "Incorrect function")
+
+
+def test_a_console_that_cannot_flush_still_logs() -> None:
+    """El fallo que duplicaba la salida entera del arranque.
+
+    `write` y `flush` estaban en el mismo `try`, asi que cada linea salia en
+    pantalla y acto seguido salia "[logging] no se pudo emitir un registro de
+    ...". El mensaje decia lo contrario de lo que habia pasado -el registro SI
+    se emitio- y mandaba a buscar el fallo donde no estaba.
+    """
+    from asistente.logsetup import RobustStreamHandler
+
+    consola = _ConsolaSinFlush()
+    handler = RobustStreamHandler(consola)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    for numero in range(3):
+        handler.emit(
+            logging.LogRecord("prueba", logging.INFO, __file__, 1, f"linea {numero}", None, None)
+        )
+
+    salida = consola.getvalue()
+    assert "linea 0" in salida
+    assert "linea 2" in salida
+    assert "no se pudo emitir" not in salida
+    # Se avisa UNA vez de que la consola no admite flush, no en cada linea.
+    assert salida.count("no admite flush") == 1
+    assert consola.flushes == 3
+
+
+def test_a_console_that_cannot_write_is_still_reported() -> None:
+    """Lo contrario del test anterior: un `write` que falla SI es un registro
+    perdido, y ahi el aviso tiene que seguir saliendo."""
+    from asistente.logsetup import RobustStreamHandler
+
+    class _Rota(io.StringIO):
+        def write(self, text: str) -> int:
+            raise OSError(1, "Incorrect function")
+
+    handler = RobustStreamHandler(_Rota())
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    fallos = []
+    handler.handleError = lambda record: fallos.append(record)  # type: ignore[method-assign]
+
+    handler.emit(logging.LogRecord("prueba", logging.INFO, __file__, 1, "hola", None, None))
+
+    assert len(fallos) == 1
 
 
 # --------------------------------------------------------------------------

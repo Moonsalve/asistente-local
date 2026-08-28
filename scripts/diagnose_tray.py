@@ -49,9 +49,16 @@ def main() -> int:
     # en el registro.
     logging.basicConfig(level=logging.DEBUG, format="%(levelname)-7s %(name)s: %(message)s")
 
+    from asistente.preflight import describe_interpreter
+
     print("=" * 70)
     print("ICONO DE BANDEJA")
     print("=" * 70)
+    # Lo primero, porque condiciona todo lo demas: un acceso directo puede
+    # apuntar a un python distinto del de la terminal, y entonces "pystray esta
+    # instalado" y "al asistente le falta pystray" son ciertas a la vez.
+    print(f"\nInterprete: {describe_interpreter()}")
+    print()
 
     if not _report_dependencies():
         return 1

@@ -15,7 +15,7 @@ respuesta, en la ruta que cubre la mayoría de comandos.
 |---|---|---|
 | 0 | Andamiaje, configuración, contratos tipados | Hecha |
 | 1 | Audio: wake word, VAD, STT | **En marcha en el PC** (STT en CUDA, 0.12 s) |
-| 2 | Router de 4 etapas + skills | **Hecha y verificada** (379 tests) |
+| 2 | Router de 4 etapas + skills | **Hecha y verificada** (386 tests) |
 | 3 | Spotify OAuth + control de sistema | **En marcha en el PC** |
 | 4 | Fallback con LLM (Ollama) | En marcha; falta medir cuánto se usa |
 | 4.5 | El LLM corrige el nombre de la canción | Escrito y con tests; **sin verificar en el PC** |
@@ -232,7 +232,7 @@ instante en vez de convertirse en un comando que no hace nada.
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest -q                           # 379 tests, ~3 s
+PYTHONPATH=src pytest -q                           # 386 tests, ~3 s
 PYTHONPATH=src python scripts/diagnose_router.py   # scores del router frase a frase
 PYTHONPATH=src python scripts/diagnose_apps.py     # qué apps se abren y cuáles se cierran
 PYTHONPATH=src python scripts/diagnose_spotify.py  # dispositivos, tus playlists, me gusta
@@ -790,6 +790,40 @@ hace las dos y comprueba con `ctypes` que la DLL carga de verdad.
 Si aun así falla, el asistente **degrada el STT a CPU automáticamente** y avisa
 en el log. Funciona, pero más lento: sirve para probar el resto del pipeline
 mientras arreglas CUDA.
+
+### `NO_SUCHFILE: Load model ...\openwakeword\resources\models\silero_vad.onnx failed` (corregido)
+
+Apolo cargaba Whisper y Piper —unos 30 segundos— y solo entonces moría con un
+error de onnxruntime apuntando a un fichero que falta **dentro de
+site-packages**, lo que parece una instalación corrupta y no lo es.
+
+El paquete pip de openWakeWord trae solo el código: los `.onnx` se descargan
+aparte. Quien los descargaba era `WakeWordDetector` al construirse, y eso solo
+ocurre en modo `openwakeword`. En modo `transcript` —el de por defecto, y el
+único que admite *"Apolo"*— ese detector no se construye nunca. Pero
+`silero_vad.onnx` está en ese mismo directorio y lo necesita el endpointing en
+**los dos** modos, así que en el modo normal no lo descargaba nadie.
+
+Lo peor era el preflight: avisaba de que *"se descargarán solos al arrancar"*,
+que en ese modo era falso, así que mandaba a buscar el fallo donde no estaba.
+Ahora el preflight los **descarga** en vez de prometerlo, y `SileroVad` se
+asegura por su cuenta en lugar de dar por hecho que otro componente pasó antes.
+Si te lo encuentras en una instalación vieja:
+
+```powershell
+python scripts/download_models.py
+```
+
+### `[logging] no se pudo emitir un registro de '...' (OSError: [WinError 1] Incorrect function)` (corregido)
+
+Salía una vez por cada línea del arranque, justo **después** de imprimirla bien.
+El mensaje decía lo contrario de lo que pasaba: el registro sí se emitía.
+
+`write` y `flush` estaban en el mismo `try`. En algunas consolas de Windows el
+`write` funciona y es el `flush` posterior el que da `WinError 1`, así que cada
+línea correcta arrastraba un error falso detrás y la salida del arranque salía
+duplicada. Ahora el flush va aparte: si la consola no lo admite se dice **una
+vez** y se sigue.
 
 ### `ollama ResponseError: time: missing unit in duration "-1"`
 
