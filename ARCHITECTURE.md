@@ -545,43 +545,29 @@ icono no impide asistir, pero deja el proceso sin más forma de pararse que el
 Administrador de tareas, y eso no puede enterarse uno leyendo un fichero de log
 que no sabe que existe.
 
-### La ventana de seguimiento: qué sustituye a la palabra clave
+### Se probó una ventana de seguimiento, y se quitó
 
 Repetir *"Apolo"* para cada paso de volumen convierte un ajuste de tres
-segundos en uno de quince. Tras cada orden el asistente sigue escuchando 5 s
-sin exigir la clave, y cada orden aceptada renueva el plazo.
+segundos en uno de quince, así que se implementó una ventana de 5 s tras cada
+orden en la que no hacía falta la palabra clave. Se retiró después de usarla.
 
-El problema es lo que se está quitando: **la palabra clave es la única defensa
-real contra ejecutar lo que se oye de la televisión**. El router no la
-sustituye —su trabajo es elegir el mejor intent, no decidir si le hablaban a
-él—, así que dentro de la ventana hacen falta otros filtros. Son tres, y tienen
-que pasar los tres:
+El problema es lo que se estaba quitando: **la palabra clave es la única señal
+fiable de que la frase iba dirigida al asistente**. El router no la sustituye
+—su trabajo es elegir el mejor intent, no decidir si le hablaban a él—, así que
+la ventana necesitaba heurísticas propias: una allowlist de acciones
+reversibles, rechazar todo lo que escalara al LLM, y verificación de locutor.
 
-| Filtro | Qué descarta | Por qué ese |
-|---|---|---|
-| allowlist `follow_up.tools` | abrir apps, buscar en la web, poner una canción | acota el **daño**, no la probabilidad |
-| etapa del router ≠ `llm` | conversación ajena | si hizo falta el modelo, no era una orden simple; y la clase `_fallback` manda ahí todo lo que no parece un comando |
-| verificación de locutor | otras voces | aquí **sí** se aplica, al revés que en el turno normal: allí acababas de decir la clave, aquí no ha dicho nada nadie |
+Los tres filtros funcionaban y aun así el resultado no compensaba, por una
+asimetría que solo se ve usándolo: **el coste de los dos errores no es
+simétrico**. Un falso negativo —no te hace caso y tienes que decir "Apolo"— es
+exactamente lo que había antes, o sea coste cero. Un falso positivo —salta una
+canción porque la tele dijo algo parecido— rompe lo que estabas haciendo. Con
+esa asimetría, cualquier filtro que no sea perfecto pierde contra no tener
+ventana, y ninguno de los tres se acerca a perfecto.
 
-El criterio de la allowlist es explícito y está escrito como test: *si la tele
-lo dispara, ¿se deshace hablando?* Reproducción y volumen sí —el peor caso es
-que salte una canción y digas "anterior"—; `open.target` abriría ventanas
-encima de lo que estés haciendo y no.
-
-**Oírse a sí mismo era el fallo que la hacía inútil.** El callback del driver de
-audio no para nunca: mientras Piper habla por los altavoces, la voz del propio
-asistente se encola en el buffer del micrófono (que aguanta ~5 s). Con palabra
-clave eso era inofensivo —el asistente no dice "Apolo"—, pero sin ella se
-transcribiría a sí mismo y se contestaría solo. Por eso la ventana espera a que
-el TTS termine **y** vacía el buffer (`MicrophoneStream.discard_pending()`)
-antes de volver a escuchar. El plazo empieza a contar cuando calla, no cuando
-termina de ejecutar: si no, una confirmación de dos segundos se comería media
-ventana.
-
-Cada frase rechazada se registra **con el motivo**, no como "ignorada" a secas.
-Es la diferencia entre poder ajustar esto y tener que adivinar: el motivo dice
-si a la allowlist le falta un nombre o si la ventana está recogiendo
-conversación y hay que acortarla.
+Queda documentado porque la idea es tentadora y va a volver a surgir. Si vuelve,
+el camino no es afinar los filtros: es una wake word entrenada, que hace que
+decir *"Apolo"* cueste tan poco que la ventana deje de hacer falta.
 
 ---
 

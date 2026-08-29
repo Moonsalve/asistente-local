@@ -47,30 +47,6 @@ vad:
   max_utterance_s: 15.0
   preroll_s: 0.3
 
-# Encadenar ordenes sin repetir "Apolo". Tras cada orden el asistente sigue
-# escuchando unos segundos, para que "sube el volumen" / "mas" / "mas" no
-# necesite decir la palabra clave tres veces.
-#
-# DENTRO DE LA VENTANA NO HAY PALABRA CLAVE, que es la unica defensa real
-# contra ejecutar lo que se oye de la tele. Por eso solo se acepta lo de
-# `tools`, y solo si el router lo resolvio SIN LLM. El criterio para anadir
-# algo aqui no es "me resulta comodo" sino "que pasa si lo dispara la tele":
-# si la respuesta no es "lo deshago diciendo lo contrario", no va aqui.
-follow_up:
-  enabled: true
-  window_s: 5.0
-  tools:
-    - media.next
-    - media.previous
-    - media.play_pause
-    - volume.step        # sube y baja: los dos intents usan esta skill
-    - volume.set
-    - volume.mute
-    - volume.query
-    # Deliberadamente FUERA: open.target y web.search abririan ventanas encima
-    # de lo que estes haciendo, spotify.play necesita un titulo (y con el, el
-    # LLM, que la ventana ya rechaza), y spotify.like te ensucia la biblioteca.
-
 stt:
   model: large-v3-turbo
   device: cuda

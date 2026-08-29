@@ -25,7 +25,6 @@ import numpy as np
 import pytest
 
 from asistente.audio.recorder import Utterance
-from asistente.config import FollowUpConfig
 from asistente.logsetup import configure
 from asistente.pipeline import Assistant
 from asistente.runtime import anchor_working_directory, app_root, data_dir, has_console
@@ -304,14 +303,7 @@ class _CountingWakeWord:
 
 
 def _assistant(**kwargs: object) -> Assistant:
-    """Ensambla un Assistant con lo minimo: aqui solo se prueba el bucle.
-
-    Sin ventana de seguimiento: lo que se prueba aqui es que el bucle se para
-    cuando se le pide. La ventana tiene sus propios tests en
-    `test_follow_up.py`, y dejarla activa meteria su maquina de estados dentro
-    de un test que no habla de ella.
-    """
-    kwargs.setdefault("follow_up", FollowUpConfig(enabled=False))
+    """Ensambla un Assistant con lo minimo: aqui solo se prueba el bucle."""
     return Assistant(
         _Mic(),  # type: ignore[arg-type]
         kwargs.pop("recorder", None),  # type: ignore[arg-type]

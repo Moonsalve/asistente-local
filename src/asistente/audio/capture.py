@@ -94,34 +94,6 @@ class MicrophoneStream:
             self._preroll.append(block)
             yield block
 
-    def discard_pending(self) -> float:
-        """Tira el audio ya capturado que aun no se ha consumido. Devuelve los
-        segundos descartados.
-
-        POR QUE HACE FALTA. El callback del driver no para nunca: mientras el
-        asistente habla por Piper, sus propias palabras se van encolando aqui
-        (la cola aguanta unos 5 s). Al volver a escuchar, lo primero que se
-        consume es la voz del propio asistente.
-
-        Con palabra clave eso era inofensivo -el asistente no dice "Apolo"-,
-        pero la ventana de seguimiento no exige palabra clave: sin este vaciado
-        se transcribiria a si mismo y se contestaria solo. Tambien evita que la
-        ventana empiece a contar sobre audio viejo de hace 5 segundos.
-
-        El preroll se limpia con la cola: es audio del mismo momento, y
-        anteponerlo a la siguiente frase meteria justo lo que se acaba de
-        tirar.
-        """
-        descartados = 0
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-            descartados += 1
-        self._preroll.clear()
-        return descartados * self._block_size / self._sample_rate
-
     def preroll_audio(self) -> np.ndarray:
         """Audio inmediatamente anterior al momento actual."""
         return np.concatenate(list(self._preroll)) if self._preroll else np.zeros(0, np.float32)

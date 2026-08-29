@@ -160,39 +160,3 @@ def test_filtro_de_alucinaciones_de_whisper() -> None:
     ]
     for texto in reales:
         assert not is_hallucination(texto), texto
-
-
-def test_the_wait_for_speech_can_be_shortened() -> None:
-    """La ventana de seguimiento acota lo que queda de plazo en cada trozo.
-
-    Sin esto, una ventana de 5 s se estiraria a 7 esperando los 2 s de rigor a
-    alguien que ya no va a decir nada. El limite es de la ESPERA, no de la
-    frase: lo comprueba el test siguiente.
-    """
-    config = VadConfig(silence_s=0.32, speech_threshold=0.5)
-    recorder = UtteranceRecorder(ScriptedVad([0.0] * 200), config, SAMPLE_RATE)
-
-    utterance = recorder.record(
-        _blocks(200), np.zeros(0, dtype=np.float32), wait_s=0.5
-    )
-
-    assert utterance.empty
-    # 0.5 s son 6.25 bloques de 80 ms: se rinde en el septimo, no a los 2 s.
-    assert utterance.total_s == pytest.approx(0.56, abs=BLOCK_S)
-
-
-def test_a_short_wait_does_not_cut_the_phrase() -> None:
-    """Una vez empiezas a hablar se graba entera. `wait_s` solo acota el
-    silencio de antes; cortar por la mitad una frase que ya arranco seria
-    exactamente el fallo que `silence_s` existe para evitar."""
-    config = VadConfig(silence_s=0.32, speech_threshold=0.5)
-    # Habla desde el primer bloque y sigue mucho mas alla del wait_s.
-    script = [0.9] * 20 + [0.0] * 10
-    recorder = UtteranceRecorder(ScriptedVad(script), config, SAMPLE_RATE)
-
-    utterance = recorder.record(
-        _blocks(200), np.zeros(0, dtype=np.float32), wait_s=0.5
-    )
-
-    assert not utterance.empty
-    assert utterance.speech_s == pytest.approx(20 * BLOCK_S, abs=BLOCK_S)

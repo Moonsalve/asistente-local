@@ -422,7 +422,6 @@ def _run_voice_mode(
             vad_config=config.vad,
             speaker_gate=speaker_gate,
             stop=stop,
-            follow_up=config.follow_up,
         )
         try:
             assistant.run_forever()
